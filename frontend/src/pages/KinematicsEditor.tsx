@@ -166,6 +166,12 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
   const onDown = (e: React.MouseEvent<SVGSVGElement>) => {
     const w = toWorldXY(e);
     if (tool === "revolute" || tool === "prismatic" || tool === "fixed") {
+      const existing = pickJoint(w);
+      if (existing && Math.hypot(existing.x - w[0], existing.y - w[1]) < 0.04) {
+        setSel({ kind: "joint", id: existing.id });
+        setMsg("Une liaison existe déjà à cet endroit : elle est sélectionnée (pas de doublon).");
+        return;
+      }
       const id = uid();
       const j: JointNode = { id, type: tool, x: w[0], y: w[1], axisDeg: 0, sideA: null, sideB: null };
       setDiagram((d) => ({ ...d, joints: [...d.joints, j] }));
@@ -500,6 +506,15 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
               <div>Mobilité m = <strong>{analysis.mobilite}</strong></div>
               <div>Hyperstatisme h = <strong>{analysis.hyperstatisme}</strong></div>
               {analysis.mobilite !== 1 && <div style={{ color: "#d62728" }}>Il faut m = 1 avec un moteur pour simuler.</div>}
+              {analysis.hyperstatisme > 0 && (
+                <div style={{ color: "#d62728" }}>
+                  Hyperstatique (h = {analysis.hyperstatisme}) : une liaison est en trop —
+                  vérifie qu'elle n'est pas attachée deux fois au bâti ou au même solide.
+                </div>
+              )}
+              {analysis.anomalies?.map((a: string, i: number) => (
+                <div key={i} style={{ color: "#d62728" }}>{a}</div>
+              ))}
             </div>
           )}
         </div>

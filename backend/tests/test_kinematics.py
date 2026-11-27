@@ -135,6 +135,16 @@ def test_run_mechanism_assembles_near_drawn_pose():
     assert abs(rocker[1] - data["bodies"][3]["y"]) < 0.02
 
 
+def test_analyze_detects_degenerate_joint():
+    data = {
+        "bodies": [{"id": "g", "grounded": True}, {"id": "a"}],
+        "joints": [{"type": "revolute", "a": "a", "b": "a"}],
+    }
+    s = kin.analyze_structure(data)
+    assert s["anomalies"]
+    assert s["liaisons"][0]["meme_solide"] is True
+
+
 def test_run_mechanism_impossible_geometry():
     m = kin.build_four_bar()
     data = _dict_from_mech(m)

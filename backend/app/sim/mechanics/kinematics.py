@@ -246,7 +246,17 @@ def analyze_structure(data):
     bodies = data.get("bodies", [])
     joints = data.get("joints", [])
     n = len(bodies)
-    total_c = sum(JOINT_CONSTRAINTS.get(j.get("type"), 0) for j in joints)
+    anomalies = []
+    liaisons = []
+    total_c = 0
+    for j in joints:
+        c = JOINT_CONSTRAINTS.get(j.get("type"), 0)
+        total_c += c
+        meme_solide = j.get("a") is not None and j.get("a") == j.get("b")
+        if meme_solide:
+            anomalies.append("Une liaison a ses 2 côtés sur le même solide : elle bloque ce solide.")
+        liaisons.append({"type": j.get("type"), "a": j.get("a"), "b": j.get("b"),
+                         "contraintes": c, "meme_solide": meme_solide})
     raw = 3 * (n - 1) - total_c if n > 0 else 0
     return {
         "n_solids": n,
@@ -254,11 +264,8 @@ def analyze_structure(data):
         "somme_contraintes": total_c,
         "mobilite": max(raw, 0),
         "hyperstatisme": max(-raw, 0),
-        "liaisons": [
-            {"type": j.get("type"), "a": j.get("a"), "b": j.get("b"),
-             "contraintes": JOINT_CONSTRAINTS.get(j.get("type"), 0)}
-            for j in joints
-        ],
+        "liaisons": liaisons,
+        "anomalies": anomalies,
     }
 
 
@@ -308,7 +315,9 @@ def run_mechanism(data, steps=240):
                            "points": {k: v.tolist() for k, v in b.points.items()}})
     return {
         "ok": bool(ok),
-        "error": None if ok else "Assemblage impossible depuis cette position initiale.",
+        "error": (None if ok else
+                  f"Assemblage impossible (bloqué vers t = {float(ts[-1]) if len(ts) else 0.0:.3f} s). "
+                  "Vérifie les longueurs des barres et clique sur « Analyser (m, h) » : il faut m = 1, h = 0."),
         "t": ts.tolist(),
         "period": period,
         "omega": omega,
