@@ -54,17 +54,17 @@ Dessiner un schéma cinématique (liaisons normalisées + solides), l'analyser
 - [x] **F16 — Courbe de l'angle du solide moteur** vs temps.
 - [ ] **F17 — Trajectoires (drapeaux)** : poser un drapeau sur un point → courbe de sa trajectoire.
 - [ ] **F18 — Sondes** : valeur d'une liaison (angle, course) en courbe.
-- [ ] **F19 — Dynamique** : masses/inerties des solides, forces aux liaisons, équilibrage.
+- [x] **F19 — Dynamique** : masses/inerties des solides, forces aux liaisons, équilibrage.
 - [x] **F20 — Assemblage robuste** : le solveur s'ancre sur le dessin (pas d'effondrement, pas de saut de branche).
 
 ### Études statique et dynamique (ajout demandeur, 2026-11-27)
-- [ ] **F26 — Moteur linéaire (vérin linéaire)** : drive une glissière en position/vitesse imposée `x(t) = x0 + v·t` (effort imposé en v2) ; course, vitesse, accélération tracées.
-- [ ] **F27 — Masses et inerties** par solide (saisie manuelle d'abord ; import automatique depuis le STEP SolidWorks via OCCT au module 06).
-- [ ] **F28 — Accélérations** des solides (q̈) : courbes + vecteurs sur le schéma animé.
-- [ ] **F29 — Efforts dans les liaisons** : forces de réaction aux pivots (2 composantes), effort axial en glissière, calculés par les multiplicateurs de Lagrange λ du système KKT `[M  −Jᵀ ; J  0]·[q̈ ; λ] = [Q_ext + h ; −ḊJ·q̇]` (Newton–Euler contraint).
-- [ ] **F30 — Couples et puissance** : couple moteur C(t), puissance P = C·ω (rotatif) ou P = F·v (linéaire), courbes + affichage en direct sur le schéma.
-- [ ] **F31 — Étude statique** : gravité + effort extérieur imposé sur un solide, avec q̇ = q̈ = 0 → torseur de réaction dans chaque liaison (résolution du même système KKT à l'équilibre).
-- [ ] **F32 — Bilan de puissance** : puissance motrice vs somme des puissances aux liaisons → rendement du mécanisme.
+- [x] **F26 — Moteur linéaire (vérin linéaire)** : drive une glissière en position/vitesse imposée `x(t) = x0 + v·t` (effort imposé en v2) ; course, vitesse, accélération tracées.
+- [x] **F27 — Masses et inerties** par solide (saisie manuelle d'abord ; import automatique depuis le STEP SolidWorks via OCCT au module 06).
+- [x] **F28 — Accélérations** des solides (q̈) : courbes + vecteurs sur le schéma animé.
+- [x] **F29 — Efforts dans les liaisons** : forces de réaction aux pivots (2 composantes), effort axial en glissière, calculés par les multiplicateurs de Lagrange λ du système KKT `[M  −Jᵀ ; J  0]·[q̈ ; λ] = [Q_ext + h ; −ḊJ·q̇]` (Newton–Euler contraint).
+- [x] **F30 — Couples et puissance** : couple moteur C(t), puissance P = C·ω (rotatif) ou P = F·v (linéaire), courbes + affichage en direct sur le schéma.
+- [x] **F31 — Étude statique** : gravité + effort extérieur imposé sur un solide, avec q̇ = q̈ = 0 → torseur de réaction dans chaque liaison (résolution du même système KKT à l'équilibre).
+- [x] **F32 — Bilan de puissance** : puissance motrice vs somme des puissances aux liaisons → rendement du mécanisme.
 
 ### Vues et fichiers
 - [x] **F21 — Zoom / panoramique** du canvas.

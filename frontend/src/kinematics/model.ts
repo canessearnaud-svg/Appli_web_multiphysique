@@ -1,5 +1,5 @@
 export type Vec = [number, number];
-export type JointType = "revolute" | "prismatic" | "fixed";
+export type JointType = "revolute" | "prismatic" | "fixed" | "motor_linear";
 
 export type JointNode = {
   id: string;
@@ -9,9 +9,18 @@ export type JointNode = {
   axisDeg: number;
   sideA: string | null;
   sideB: string | null;
+  v?: number;
+  s0?: number;
 };
 
-export type Solid = { id: string; name: string; grounded: boolean; jointIds: string[] };
+export type Solid = {
+  id: string;
+  name: string;
+  grounded: boolean;
+  jointIds: string[];
+  mass?: number;
+  inertia?: number;
+};
 
 export type Motor = { solid: string; omega: number; theta0: number };
 
@@ -120,7 +129,8 @@ export const toBackendDiagram = (d: Diagram) => {
         const dy = j.y - f.y;
         points["J" + (i + 1)] = [dx * c - dy * si, dx * si + dy * c];
       });
-      return { id: s.id, name: s.name, grounded: s.grounded, x: f.x, y: f.y, theta: f.theta, points };
+      return { id: s.id, name: s.name, grounded: s.grounded, x: f.x, y: f.y, theta: f.theta,
+               mass: s.mass ?? 1.0, inertia: s.inertia ?? 0.0, points };
     });
   const joints = d.joints
     .filter((j) => j.sideA && j.sideB)
@@ -132,6 +142,8 @@ export const toBackendDiagram = (d: Diagram) => {
       b: j.sideB!,
       lb: pointOf.get(j.sideB + ":" + j.id)!,
       axisDeg: j.axisDeg,
+      v: j.v ?? 0.05,
+      s0: j.s0 ?? 0,
     }));
   const motor = d.motor ? { body: d.motor.solid, omega: d.motor.omega, theta0: d.motor.theta0 } : null;
   return { bodies, joints, motor };

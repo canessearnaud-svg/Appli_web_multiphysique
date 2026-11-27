@@ -97,8 +97,8 @@ def _dict_from_mech(m, motor_body="crank"):
                        "x": float(b.q[0]), "y": float(b.q[1]), "theta": float(b.q[2]),
                        "points": {k: v.tolist() for k, v in b.points.items()}})
     joints = [{"type": j["type"], "a": ids[j["a"].name], "la": j["la"],
-               "b": ids[j["b"].name], "lb": j["lb"], "axisDeg": 0}
-              for j in m.joints if j["type"] != "motor"]
+               "b": ids[j["b"].name], "lb": j["lb"], "axisDeg": 0, "node": f"j{i}"}
+              for i, j in enumerate(m.joints) if j["type"] != "motor"]
     return {"bodies": bodies, "joints": joints,
             "motor": {"body": ids[motor_body], "omega": 2 * np.pi, "theta0": 0.0}}
 
@@ -150,6 +150,59 @@ def _four_bar_dict(a, b, c, d):
             {"type": "revolute", "a": "r", "la": "D", "b": "g", "lb": "D"},
         ],
     }
+
+
+def test_linear_motor_drives_slider():
+    data = {
+        "bodies": [
+            {"id": "g", "grounded": True, "x": 0, "y": 0, "theta": 0, "points": {"S": [0, 0]}},
+            {"id": "s", "x": 0.1, "y": 0, "theta": 0, "points": {"C": [0, 0]}, "mass": 2.0, "inertia": 0.0},
+        ],
+        "joints": [{"type": "motor_linear", "a": "g", "la": "S", "b": "s", "lb": "C",
+                    "axisDeg": 0, "s0": 0.1, "v": 0.5, "node": "j1"}],
+    }
+    s = kin.analyze_structure(data)
+    assert s["mobilite"] == 1 and s["n_drivers"] == 1 and not s["anomalies"]
+    res = kin.run_mechanism(data, steps=100)
+    assert res["ok"] is True
+    slider_x = [q[0] for q in res["bodies"][1]["qs"]]
+    assert abs(slider_x[-1] - 2.1) < 1e-6
+    assert len(res["motor_power"]) == len(res["t"])
+    assert len(res["joint_series"]["j1"]) == len(res["t"])
+
+
+def test_statics_lever():
+    data = {
+        "bodies": [
+            {"id": "g", "grounded": True, "x": 0, "y": 0, "theta": 0, "points": {"O": [0, 0]}},
+            {"id": "bar", "x": 0, "y": 0, "theta": 0, "points": {"O": [0, 0], "A": [0.3, 0]}, "mass": 0.0, "inertia": 0.0},
+        ],
+        "joints": [{"type": "revolute", "a": "g", "la": "O", "b": "bar", "lb": "O", "node": "j1"}],
+        "motor": {"body": "bar", "omega": 2 * np.pi, "theta0": 0.0},
+        "external_force": {"body": "bar", "point": "A", "force": [0.0, -100.0]},
+    }
+    res = kin.run_mechanism(data, mode="statics")
+    assert res["ok"] is True
+    j1 = [r for r in res["reactions"] if r["kind"] == "revolute"][0]
+    mot = [r for r in res["reactions"] if r["kind"] == "motor"][0]
+    assert abs(abs(j1["fy"]) - 100.0) < 1e-6
+    assert abs(abs(mot["torque"]) - 30.0) < 1e-6
+
+
+def test_dynamics_four_bar_outputs():
+    m = kin.build_four_bar()
+    data = _dict_from_mech(m)
+    for b in data["bodies"]:
+        b["mass"] = 1.5
+        b["inertia"] = 0.02
+    res = kin.run_mechanism(data, steps=120)
+    assert res["ok"] is True
+    assert res["mode"] == "dynamics"
+    assert len(res["motor_torque"]) == len(res["t"])
+    assert len(res["motor_power"]) == len(res["t"])
+    assert all(np.isfinite(res["motor_power"]))
+    assert all(len(ob.get("qdds", [])) == len(res["t"]) for ob in res["bodies"] if not ob["grounded"])
+    assert len(res["joint_series"]) >= 4
 
 
 def test_grashof_change_point_detected():
