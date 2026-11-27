@@ -59,36 +59,62 @@ class Mechanism:
         for i, b in enumerate(self.free_bodies()):
             b.q = q[3 * i:3 * i + 3].copy()
 
-    def constraints(self, q, t=0.0):
+    def _build(self, q, t=0.0):
         self.unpack(q)
-        out = []
+        free = self.free_bodies()
+        col = {id(b): 3 * i for i, b in enumerate(free)}
+        n = 3 * len(free)
+
+        def dpoint(b, label):
+            x, y, th = b.q
+            px, py = b.points[label]
+            c, s = np.cos(th), np.sin(th)
+            p = np.array([x + c * px - s * py, y + s * px + c * py])
+            dpdth = np.array([-s * px - c * py, c * px - s * py])
+            return p, dpdth
+
+        rows = []
         for j in self.joints:
             kind = j["type"]
             if kind in ("revolute", "fixed"):
-                pa = point_world(j["a"], j["la"])
-                pb = point_world(j["b"], j["lb"])
-                out.append(pa[0] - pb[0])
-                out.append(pa[1] - pb[1])
+                pa, da = dpoint(j["a"], j["la"])
+                pb, db = dpoint(j["b"], j["lb"])
+                r = pa - pb
+                rows.append((r[0], [(j["a"], np.array([1.0, 0.0, da[0]])), (j["b"], np.array([-1.0, 0.0, -db[0]]))]))
+                rows.append((r[1], [(j["a"], np.array([0.0, 1.0, da[1]])), (j["b"], np.array([0.0, -1.0, -db[1]]))]))
                 if kind == "fixed":
-                    out.append(j["a"].q[2] - j["b"].q[2])
+                    rows.append((j["a"].q[2] - j["b"].q[2],
+                                 [(j["a"], np.array([0.0, 0.0, 1.0])), (j["b"], np.array([0.0, 0.0, -1.0]))]))
             elif kind == "prismatic":
-                pa = point_world(j["a"], j["la"])
-                pb = point_world(j["b"], j["lb"])
+                pa, da = dpoint(j["a"], j["la"])
+                pb, db = dpoint(j["b"], j["lb"])
                 ax, ay = j["axis"]
-                out.append(-ay * (pb[0] - pa[0]) + ax * (pb[1] - pa[1]))
-                out.append(j["b"].q[2] - j["a"].q[2])
+                nrm = np.array([-ay, ax])
+                rows.append((float(nrm @ (pb - pa)), [
+                    (j["a"], np.array([-nrm[0], -nrm[1], -float(nrm @ da)])),
+                    (j["b"], np.array([nrm[0], nrm[1], float(nrm @ db)]))]))
+                rows.append((j["b"].q[2] - j["a"].q[2],
+                             [(j["a"], np.array([0.0, 0.0, -1.0])), (j["b"], np.array([0.0, 0.0, 1.0]))]))
             elif kind == "motor":
-                out.append(j["body"].q[2] - (j["theta0"] + j["omega"] * t))
-        return np.asarray(out, dtype=float)
+                rows.append((j["body"].q[2] - (j["theta0"] + j["omega"] * t),
+                             [(j["body"], np.array([0.0, 0.0, 1.0]))]))
+        m = len(rows)
+        phi = np.zeros(m)
+        J = np.zeros((m, n))
+        for i, (v, terms) in enumerate(rows):
+            phi[i] = v
+            for b, coef in terms:
+                c0 = col.get(id(b))
+                if c0 is not None:
+                    J[i, c0:c0 + 3] = coef
+        return phi, J
 
-    def jacobian(self, q, t=0.0, eps=1e-7):
-        phi0 = self.constraints(q, t)
-        n = len(q)
-        J = np.zeros((len(phi0), n))
-        for i in range(n):
-            dq = np.zeros(n)
-            dq[i] = eps
-            J[:, i] = (self.constraints(q + dq, t) - self.constraints(q - dq, t)) / (2 * eps)
+    def constraints(self, q, t=0.0):
+        phi, _ = self._build(q, t)
+        return phi
+
+    def jacobian(self, q, t=0.0):
+        _, J = self._build(q, t)
         return J
 
     def residual(self, q, t=0.0):
@@ -113,18 +139,64 @@ class Mechanism:
         phi_dot = (self.constraints(q, t + h) - self.constraints(q, t - h)) / (2 * h)
         return np.linalg.solve(J, -phi_dot)
 
+    def solve_position_robust(self, q0, t, tol=1e-10, max_iter=40):
+        q = q0.copy()
+        n = len(q)
+        for mu in (1.0, 0.1, 1e-2, 1e-3, 1e-4):
+            lam = 1e-3
+            phi, J = self._build(q, t)
+            if np.max(np.abs(phi)) < tol:
+                return q, True
+            cost = float(phi @ phi) + mu * float((q - q0) @ (q - q0))
+            for _ in range(max_iter):
+                A = J.T @ J + (lam + mu) * np.eye(n)
+                g = J.T @ phi + mu * (q - q0)
+                try:
+                    dq = -np.linalg.solve(A, g)
+                except np.linalg.LinAlgError:
+                    lam *= 10
+                    continue
+                qn = q + dq
+                phin, Jn = self._build(qn, t)
+                costn = float(phin @ phin) + mu * float((qn - q0) @ (qn - q0))
+                if costn < cost:
+                    q, phi, J, cost = qn, phin, Jn, costn
+                    lam = max(lam * 0.3, 1e-12)
+                    if np.max(np.abs(phi)) < tol:
+                        return q, True
+                else:
+                    lam *= 10
+        q2, ok2 = self.solve_position(q, t, tol=tol)
+        if ok2:
+            return q2, True
+        return q, self.residual(q, t) < 1e-8
+
+
+def _advance(mech, q, t_from, t_to, depth=0):
+    qn, ok = mech.solve_position_robust(q, t_to)
+    if ok:
+        return qn, True
+    if depth >= 6:
+        return q, False
+    mid = 0.5 * (t_from + t_to)
+    qm, okm = _advance(mech, q, t_from, mid, depth + 1)
+    if not okm:
+        return q, False
+    return _advance(mech, qm, mid, t_to, depth + 1)
+
 
 def simulate(mech, q0, t0, t1, steps):
     ts = np.linspace(t0, t1, steps + 1)
     qs = np.zeros((steps + 1, mech.nq()))
     qdots = np.zeros_like(qs)
     q = q0.copy()
-    for k, t in enumerate(ts):
-        q, ok = mech.solve_position(q, t)
+    qs[0] = q
+    for k in range(1, steps + 1):
+        q, ok = _advance(mech, q, ts[k - 1], ts[k])
         if not ok:
             return ts[:k], qs[:k], qdots[:k], False
         qs[k] = q
-        qdots[k] = mech.solve_velocity(q, t)
+        qdots[k] = mech.solve_velocity(q, ts[k])
     return ts, qs, qdots, True
 
 
@@ -148,7 +220,7 @@ def build_four_bar(crank=0.08, coupler=0.22, rocker=0.18, ground=0.30):
     cr = m.add_body(Body("crank", {"A": (0.0, 0.0), "B": (crank, 0.0)}))
     cb = m.add_body(Body("coupler", {"B": (0.0, 0.0), "C": (C0[0] - B0[0], C0[1] - B0[1])},
                          x=B0[0], y=B0[1]))
-    cd = C0 - D
+    cd = D - C0
     rk = m.add_body(Body("rocker", {"C": (0.0, 0.0), "D": (cd[0], cd[1])},
                          x=C0[0], y=C0[1]))
     m.revolute(g, "A", cr, "A")
@@ -178,4 +250,168 @@ def run_four_bar(crank=0.08, coupler=0.22, rocker=0.18, ground=0.30, omega=2.0 *
         "max_residual": m.residual(qs[-1], ts[-1]) if len(qs) else None,
         "q0": qs[0].tolist() if len(qs) else [],
         "qT": qs[-1].tolist() if len(qs) else [],
+    }
+
+
+JOINT_CONSTRAINTS = {"revolute": 2, "prismatic": 2, "fixed": 3}
+
+
+def analyze_structure(data):
+    bodies = data.get("bodies", [])
+    joints = data.get("joints", [])
+    n = len(bodies)
+    anomalies = []
+    liaisons = []
+    total_c = 0
+    for j in joints:
+        c = JOINT_CONSTRAINTS.get(j.get("type"), 0)
+        total_c += c
+        meme_solide = j.get("a") is not None and j.get("a") == j.get("b")
+        if meme_solide:
+            anomalies.append("Une liaison a ses 2 côtés sur le même solide : elle bloque ce solide.")
+        liaisons.append({"type": j.get("type"), "a": j.get("a"), "b": j.get("b"),
+                         "contraintes": c, "meme_solide": meme_solide})
+    raw = 3 * (n - 1) - total_c if n > 0 else 0
+    return {
+        "n_solids": n,
+        "n_liaisons": len(joints),
+        "somme_contraintes": total_c,
+        "mobilite": max(raw, 0),
+        "hyperstatisme": max(-raw, 0),
+        "liaisons": liaisons,
+        "anomalies": anomalies,
+        "grashof": grashof_warnings(data),
+    }
+
+
+def grashof_warnings(data, rel_tol=1e-3):
+    bodies = {b["id"]: b for b in data.get("bodies", [])}
+    adj = {}
+    for j in data.get("joints", []):
+        if j.get("type") != "revolute":
+            continue
+        a, b = j.get("a"), j.get("b")
+        if not a or not b or a == b or a not in bodies or b not in bodies:
+            continue
+        adj.setdefault(a, []).append((b, j))
+        adj.setdefault(b, []).append((a, j))
+
+    def jworld(j, node):
+        side = "a" if j.get("a") == node else "b"
+        bd = bodies[node]
+        label = j.get("la") if side == "a" else j.get("lb")
+        if label not in bd.get("points", {}):
+            return None
+        px, py = bd["points"][label]
+        th = bd.get("theta", 0.0)
+        c, s = np.cos(th), np.sin(th)
+        return np.array([bd.get("x", 0.0) + c * px - s * py, bd.get("y", 0.0) + s * px + c * py])
+
+    warnings = []
+    seen = set()
+    for start in adj:
+        for n1, j1 in adj.get(start, []):
+            for n2, j2 in adj.get(n1, []):
+                if n2 in (start, n1):
+                    continue
+                for n3, j3 in adj.get(n2, []):
+                    if n3 in (start, n1, n2):
+                        continue
+                    for n4, j4 in adj.get(n3, []):
+                        if n4 != start:
+                            continue
+                        key = tuple(sorted([start, n1, n2, n3]))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        nodes = [start, n1, n2, n3]
+                        edges = [j1, j2, j3, j4]
+                        lens = []
+                        okp = True
+                        for i, node in enumerate(nodes):
+                            p1 = jworld(edges[i], node)
+                            p2 = jworld(edges[(i - 1) % 4], node)
+                            if p1 is None or p2 is None:
+                                okp = False
+                                break
+                            lens.append(float(np.linalg.norm(p1 - p2)))
+                        if not okp or min(lens) < 1e-9:
+                            continue
+                        L = sorted(lens)
+                        s, l, pq = L[0], L[3], L[1] + L[2]
+                        if abs(s + l - pq) <= rel_tol * max(l, 1e-9):
+                            warnings.append(
+                                f"Boucle 4 barres {list(key)} : POINT DE CHANGEMENT (s+l = p+q = {pq:.3f} m) "
+                                "— risque de blocage, modifie une longueur.")
+                        elif s + l > pq:
+                            warnings.append(
+                                f"Boucle 4 barres {list(key)} : aucune barre ne tourne complètement "
+                                f"(s+l = {s + l:.3f} > p+q = {pq:.3f} m) — le moteur va bloquer.")
+    return warnings
+
+
+def mechanism_from_dict(data):
+    m = Mechanism()
+    bodies = {}
+    for bd in data.get("bodies", []):
+        points = {k: tuple(v) for k, v in bd.get("points", {}).items()}
+        b = m.add_body(Body(bd.get("name", bd["id"]), points,
+                            x=bd.get("x", 0.0), y=bd.get("y", 0.0),
+                            theta=bd.get("theta", 0.0), grounded=bd.get("grounded", False)))
+        bodies[bd["id"]] = b
+    for j in data.get("joints", []):
+        a = bodies[j["a"]]
+        b = bodies[j["b"]]
+        if j["type"] == "revolute":
+            m.revolute(a, j["la"], b, j["lb"])
+        elif j["type"] == "prismatic":
+            ang = np.deg2rad(j.get("axisDeg", 0.0))
+            m.prismatic(a, j["la"], b, j["lb"], axis=(np.cos(ang), np.sin(ang)))
+        elif j["type"] == "fixed":
+            m.fixed(a, j["la"], b, j["lb"])
+    motor = data.get("motor")
+    if motor and motor.get("body") in bodies:
+        m.motor(bodies[motor["body"]], motor.get("omega", 2 * np.pi), motor.get("theta0", 0.0))
+    return m, bodies
+
+
+def run_mechanism(data, steps=240):
+    structure = analyze_structure(data)
+    motor = data.get("motor")
+    if not motor:
+        return {"ok": False, "error": "Ajoute un moteur (outil manivelle) sur un solide.",
+                "structure": structure}
+    m, bodies = mechanism_from_dict(data)
+    omega = float(motor.get("omega", 2 * np.pi))
+    period = 2 * np.pi / abs(omega) if omega else 1.0
+    q0 = m.pack()
+    ts, qs, qdots, ok = simulate(m, q0, 0.0, period, int(steps))
+    out_bodies = []
+    for bid, b in bodies.items():
+        series = []
+        for q in qs:
+            m.unpack(q)
+            series.append(b.q.tolist())
+        out_bodies.append({"id": bid, "name": b.name, "grounded": b.grounded, "qs": series,
+                           "points": {k: v.tolist() for k, v in b.points.items()}})
+    deg = 0.0
+    if not ok and len(qs) and motor:
+        m.unpack(qs[-1])
+        mb = bodies.get(motor.get("body"))
+        if mb is not None:
+            deg = float(np.degrees(mb.q[2] - motor.get("theta0", 0.0)))
+    return {
+        "ok": bool(ok),
+        "error": (None if ok else
+                  f"Assemblage impossible (bloqué vers t = {float(ts[-1]) if len(ts) else 0.0:.3f} s, "
+                  f"angle moteur ≈ {deg:.0f}°). Cause probable : la barre motrice ne peut pas faire un tour "
+                  "complet (condition de Grashof : plus petite barre + plus grande < somme des deux autres). "
+                  "Modifie une longueur, ou mets le moteur sur une autre barre. "
+                  "Autre piste : « Analyser (m, h) » doit donner m = 1, h = 0."),
+        "t": ts.tolist(),
+        "period": period,
+        "omega": omega,
+        "bodies": out_bodies,
+        "max_residual": m.residual(qs[-1], ts[-1]) if len(qs) else None,
+        "structure": structure,
     }
