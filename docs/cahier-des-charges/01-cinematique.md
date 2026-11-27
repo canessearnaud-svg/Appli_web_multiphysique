@@ -57,6 +57,15 @@ Dessiner un schéma cinématique (liaisons normalisées + solides), l'analyser
 - [ ] **F19 — Dynamique** : masses/inerties des solides, forces aux liaisons, équilibrage.
 - [x] **F20 — Assemblage robuste** : le solveur s'ancre sur le dessin (pas d'effondrement, pas de saut de branche).
 
+### Études statique et dynamique (ajout demandeur, 2026-11-27)
+- [ ] **F26 — Moteur linéaire (vérin linéaire)** : drive une glissière en position/vitesse imposée `x(t) = x0 + v·t` (effort imposé en v2) ; course, vitesse, accélération tracées.
+- [ ] **F27 — Masses et inerties** par solide (saisie manuelle d'abord ; import automatique depuis le STEP SolidWorks via OCCT au module 06).
+- [ ] **F28 — Accélérations** des solides (q̈) : courbes + vecteurs sur le schéma animé.
+- [ ] **F29 — Efforts dans les liaisons** : forces de réaction aux pivots (2 composantes), effort axial en glissière, calculés par les multiplicateurs de Lagrange λ du système KKT `[M  −Jᵀ ; J  0]·[q̈ ; λ] = [Q_ext + h ; −ḊJ·q̇]` (Newton–Euler contraint).
+- [ ] **F30 — Couples et puissance** : couple moteur C(t), puissance P = C·ω (rotatif) ou P = F·v (linéaire), courbes + affichage en direct sur le schéma.
+- [ ] **F31 — Étude statique** : gravité + effort extérieur imposé sur un solide, avec q̇ = q̈ = 0 → torseur de réaction dans chaque liaison (résolution du même système KKT à l'équilibre).
+- [ ] **F32 — Bilan de puissance** : puissance motrice vs somme des puissances aux liaisons → rendement du mécanisme.
+
 ### Vues et fichiers
 - [x] **F21 — Zoom / panoramique** du canvas.
 - [x] **F22 — Sauvegarde par projet** (rechargée à l'ouverture).
@@ -66,9 +75,10 @@ Dessiner un schéma cinématique (liaisons normalisées + solides), l'analyser
 
 ## Données
 
-Schéma = JSON `{ solids, joints, motor, groundId }` stocké dans la table `diagrams`
-(domaine `kinematics`), converti côté serveur en modèle multibody
-(`toBackendDiagram` → `Mechanism`). Simulations = runs (table `runs`).
+Schéma = JSON `{ solids, joints, motor | linearMotor, groundId }` stocké dans la table
+`diagrams` (domaine `kinematics`), converti côté serveur en modèle multibody
+(`toBackendDiagram` → `Mechanism`). Chaque solide peut porter `mass` et `inertia`
+(F27). Simulations = runs (table `runs`).
 
 ## Hors périmètre
 
