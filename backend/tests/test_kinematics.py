@@ -153,3 +153,5 @@ def test_run_mechanism_impossible_geometry():
             b["points"]["C"] = [0.02, 0.0]
     res = kin.run_mechanism(data, steps=10)
     assert res["ok"] is False
+    assert "bloqué vers t" in res["error"]
+    assert "Grashof" in res["error"]

@@ -172,17 +172,31 @@ class Mechanism:
         return q, self.residual(q, t) < 1e-8
 
 
+def _advance(mech, q, t_from, t_to, depth=0):
+    qn, ok = mech.solve_position_robust(q, t_to)
+    if ok:
+        return qn, True
+    if depth >= 6:
+        return q, False
+    mid = 0.5 * (t_from + t_to)
+    qm, okm = _advance(mech, q, t_from, mid, depth + 1)
+    if not okm:
+        return q, False
+    return _advance(mech, qm, mid, t_to, depth + 1)
+
+
 def simulate(mech, q0, t0, t1, steps):
     ts = np.linspace(t0, t1, steps + 1)
     qs = np.zeros((steps + 1, mech.nq()))
     qdots = np.zeros_like(qs)
     q = q0.copy()
-    for k, t in enumerate(ts):
-        q, ok = mech.solve_position_robust(q, t)
+    qs[0] = q
+    for k in range(1, steps + 1):
+        q, ok = _advance(mech, q, ts[k - 1], ts[k])
         if not ok:
             return ts[:k], qs[:k], qdots[:k], False
         qs[k] = q
-        qdots[k] = mech.solve_velocity(q, t)
+        qdots[k] = mech.solve_velocity(q, ts[k])
     return ts, qs, qdots, True
 
 
@@ -313,11 +327,20 @@ def run_mechanism(data, steps=240):
             series.append(b.q.tolist())
         out_bodies.append({"id": bid, "name": b.name, "grounded": b.grounded, "qs": series,
                            "points": {k: v.tolist() for k, v in b.points.items()}})
+    deg = 0.0
+    if not ok and len(qs) and motor:
+        m.unpack(qs[-1])
+        mb = bodies.get(motor.get("body"))
+        if mb is not None:
+            deg = float(np.degrees(mb.q[2] - motor.get("theta0", 0.0)))
     return {
         "ok": bool(ok),
         "error": (None if ok else
-                  f"Assemblage impossible (bloqué vers t = {float(ts[-1]) if len(ts) else 0.0:.3f} s). "
-                  "Vérifie les longueurs des barres et clique sur « Analyser (m, h) » : il faut m = 1, h = 0."),
+                  f"Assemblage impossible (bloqué vers t = {float(ts[-1]) if len(ts) else 0.0:.3f} s, "
+                  f"angle moteur ≈ {deg:.0f}°). Cause probable : la barre motrice ne peut pas faire un tour "
+                  "complet (condition de Grashof : plus petite barre + plus grande < somme des deux autres). "
+                  "Modifie une longueur, ou mets le moteur sur une autre barre. "
+                  "Autre piste : « Analyser (m, h) » doit donner m = 1, h = 0."),
         "t": ts.tolist(),
         "period": period,
         "omega": omega,
