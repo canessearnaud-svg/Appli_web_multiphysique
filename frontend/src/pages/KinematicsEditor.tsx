@@ -515,6 +515,9 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
               {analysis.anomalies?.map((a: string, i: number) => (
                 <div key={i} style={{ color: "#d62728" }}>{a}</div>
               ))}
+              {analysis.grashof?.map((g: string, i: number) => (
+                <div key={i} style={{ color: "#d62728", fontWeight: "bold" }}>{g}</div>
+              ))}
             </div>
           )}
         </div>

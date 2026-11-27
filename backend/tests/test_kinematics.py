@@ -135,6 +135,38 @@ def test_run_mechanism_assembles_near_drawn_pose():
     assert abs(rocker[1] - data["bodies"][3]["y"]) < 0.02
 
 
+def _four_bar_dict(a, b, c, d):
+    return {
+        "bodies": [
+            {"id": "g", "grounded": True, "x": 0, "y": 0, "theta": 0, "points": {"A": [0, 0], "D": [d, 0]}},
+            {"id": "c", "x": 0, "y": 0, "theta": 0, "points": {"A": [0, 0], "B": [a, 0]}},
+            {"id": "b", "x": a, "y": 0, "theta": 0, "points": {"B": [0, 0], "C": [b, 0]}},
+            {"id": "r", "x": a + b, "y": 0, "theta": 0, "points": {"C": [0, 0], "D": [d - a - b, 0]}},
+        ],
+        "joints": [
+            {"type": "revolute", "a": "g", "la": "A", "b": "c", "lb": "A"},
+            {"type": "revolute", "a": "c", "la": "B", "b": "b", "lb": "B"},
+            {"type": "revolute", "a": "b", "la": "C", "b": "r", "lb": "C"},
+            {"type": "revolute", "a": "r", "la": "D", "b": "g", "lb": "D"},
+        ],
+    }
+
+
+def test_grashof_change_point_detected():
+    s = kin.analyze_structure(_four_bar_dict(0.4, 0.4, 0.4, 0.4))
+    assert any("POINT DE CHANGEMENT" in w for w in s["grashof"])
+
+
+def test_grashof_double_rocker_detected():
+    s = kin.analyze_structure(_four_bar_dict(0.2, 0.2, 0.2, 0.5))
+    assert any("aucune barre" in w for w in s["grashof"])
+
+
+def test_grashof_ok_no_warning():
+    s = kin.analyze_structure(_four_bar_dict(0.08, 0.22, 0.18, 0.30))
+    assert s["grashof"] == []
+
+
 def test_analyze_detects_degenerate_joint():
     data = {
         "bodies": [{"id": "g", "grounded": True}, {"id": "a"}],

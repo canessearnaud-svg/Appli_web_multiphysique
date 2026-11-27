@@ -280,7 +280,74 @@ def analyze_structure(data):
         "hyperstatisme": max(-raw, 0),
         "liaisons": liaisons,
         "anomalies": anomalies,
+        "grashof": grashof_warnings(data),
     }
+
+
+def grashof_warnings(data, rel_tol=1e-3):
+    bodies = {b["id"]: b for b in data.get("bodies", [])}
+    adj = {}
+    for j in data.get("joints", []):
+        if j.get("type") != "revolute":
+            continue
+        a, b = j.get("a"), j.get("b")
+        if not a or not b or a == b or a not in bodies or b not in bodies:
+            continue
+        adj.setdefault(a, []).append((b, j))
+        adj.setdefault(b, []).append((a, j))
+
+    def jworld(j, node):
+        side = "a" if j.get("a") == node else "b"
+        bd = bodies[node]
+        label = j.get("la") if side == "a" else j.get("lb")
+        if label not in bd.get("points", {}):
+            return None
+        px, py = bd["points"][label]
+        th = bd.get("theta", 0.0)
+        c, s = np.cos(th), np.sin(th)
+        return np.array([bd.get("x", 0.0) + c * px - s * py, bd.get("y", 0.0) + s * px + c * py])
+
+    warnings = []
+    seen = set()
+    for start in adj:
+        for n1, j1 in adj.get(start, []):
+            for n2, j2 in adj.get(n1, []):
+                if n2 in (start, n1):
+                    continue
+                for n3, j3 in adj.get(n2, []):
+                    if n3 in (start, n1, n2):
+                        continue
+                    for n4, j4 in adj.get(n3, []):
+                        if n4 != start:
+                            continue
+                        key = tuple(sorted([start, n1, n2, n3]))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        nodes = [start, n1, n2, n3]
+                        edges = [j1, j2, j3, j4]
+                        lens = []
+                        okp = True
+                        for i, node in enumerate(nodes):
+                            p1 = jworld(edges[i], node)
+                            p2 = jworld(edges[(i - 1) % 4], node)
+                            if p1 is None or p2 is None:
+                                okp = False
+                                break
+                            lens.append(float(np.linalg.norm(p1 - p2)))
+                        if not okp or min(lens) < 1e-9:
+                            continue
+                        L = sorted(lens)
+                        s, l, pq = L[0], L[3], L[1] + L[2]
+                        if abs(s + l - pq) <= rel_tol * max(l, 1e-9):
+                            warnings.append(
+                                f"Boucle 4 barres {list(key)} : POINT DE CHANGEMENT (s+l = p+q = {pq:.3f} m) "
+                                "— risque de blocage, modifie une longueur.")
+                        elif s + l > pq:
+                            warnings.append(
+                                f"Boucle 4 barres {list(key)} : aucune barre ne tourne complètement "
+                                f"(s+l = {s + l:.3f} > p+q = {pq:.3f} m) — le moteur va bloquer.")
+    return warnings
 
 
 def mechanism_from_dict(data):
