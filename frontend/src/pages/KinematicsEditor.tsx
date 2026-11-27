@@ -206,19 +206,31 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
         if (b.id === pending.aId) return;
         const lb = autoPointName(b);
         const j: Joint = { id: uid(), type: pending.type, a: pending.aId, la: pending.la, b: b.id, lb, axisDeg: 0 };
-        const dx = pending.pt[0] - w[0];
-        const dy = pending.pt[1] - w[1];
         const snapTheta = pending.type !== "revolute";
         setDiagram((d) => {
           const a = d.bodies.find((x) => x.id === pending.aId);
-          const moved: Body = { ...b, x: b.x + dx, y: b.y + dy, theta: snapTheta && a ? a.theta : b.theta };
-          return {
-            ...d,
-            bodies: d.bodies.map((x) =>
-              x.id === b.id ? { ...moved, points: { ...x.points, [lb]: toLocal(moved, pending.pt[0], pending.pt[1]) } } : x
-            ),
-            joints: [...d.joints, j],
-          };
+          const bb = d.bodies.find((x) => x.id === b.id);
+          if (!a || !bb) return d;
+          const moveB = !bb.grounded;
+          const moveA = !moveB && !a.grounded;
+          const movedId = moveB ? bb.id : moveA ? a.id : null;
+          const delta: Vec = moveB
+            ? [pending.pt[0] - w[0], pending.pt[1] - w[1]]
+            : [w[0] - pending.pt[0], w[1] - pending.pt[1]];
+          const target: Vec = moveB ? pending.pt : w;
+          const bodies = d.bodies.map((x) => {
+            if (movedId && x.id === movedId) {
+              const other = moveB ? a : bb;
+              const moved: Body = { ...x, x: x.x + delta[0], y: x.y + delta[1], theta: snapTheta ? other.theta : x.theta };
+              const points = moveB ? { ...x.points, [lb]: toLocal(moved, target[0], target[1]) } : x.points;
+              return { ...moved, points };
+            }
+            if (moveA && x.id === bb.id) {
+              return { ...x, points: { ...x.points, [lb]: toLocal(x, w[0], w[1]) } };
+            }
+            return x;
+          });
+          return { ...d, bodies, joints: [...d.joints, j] };
         });
         setPending(null);
         setSel({ kind: "joint", id: j.id });
@@ -279,7 +291,10 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
     if (drag.current) {
       const w = toWorldXY(e);
       const id = drag.current.bodyId;
-      setDiagram((d) => ({ ...d, bodies: d.bodies.map((b) => (b.id === id ? { ...b, x: w[0], y: w[1] } : b)) }));
+      setDiagram((d) => ({
+        ...d,
+        bodies: d.bodies.map((b) => (b.id === id && !b.grounded ? { ...b, x: w[0], y: w[1] } : b)),
+      }));
     } else if (pan.current) {
       setView((v) => ({ ...v, ox: pan.current!.ox + (e.clientX - pan.current!.x), oy: pan.current!.oy + (e.clientY - pan.current!.y) }));
     }
@@ -382,6 +397,7 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
             <div>Glissière : régler l'axe dans le panneau.</div>
             <div>Supprimer : clic sur une liaison (point</div>
             <div>rouge), un point isolé, ou un solide.</div>
+            <div>Le bâti (gris) ne bouge jamais.</div>
             {pending && <div style={{ color: "#d62728" }}>… en attente du 2ᵉ solide</div>}
           </div>
         </div>
