@@ -53,3 +53,70 @@ def test_slider_crank_prismatic():
         assert abs(slider.q[2]) < 1e-8
         xs.append(slider.q[0])
     assert max(xs) - min(xs) > 0.05
+
+
+def test_analyze_four_bar():
+    data = {
+        "bodies": [{"id": "g", "grounded": True}, {"id": "c"}, {"id": "b"}, {"id": "r"}],
+        "joints": [
+            {"type": "revolute", "a": "g", "b": "c"},
+            {"type": "revolute", "a": "c", "b": "b"},
+            {"type": "revolute", "a": "b", "b": "r"},
+            {"type": "revolute", "a": "r", "b": "g"},
+        ],
+    }
+    s = kin.analyze_structure(data)
+    assert s["n_solids"] == 4
+    assert s["n_liaisons"] == 4
+    assert s["somme_contraintes"] == 8
+    assert s["mobilite"] == 1
+    assert s["hyperstatisme"] == 0
+
+
+def test_analyze_hyperstatic():
+    data = {
+        "bodies": [{"id": "g", "grounded": True}, {"id": "a"}, {"id": "b"}],
+        "joints": [
+            {"type": "fixed", "a": "g", "b": "a"},
+            {"type": "fixed", "a": "g", "b": "b"},
+            {"type": "fixed", "a": "a", "b": "b"},
+        ],
+    }
+    s = kin.analyze_structure(data)
+    assert s["mobilite"] == 0
+    assert s["hyperstatisme"] == 3
+
+
+def _dict_from_mech(m, motor_body="crank"):
+    bodies = []
+    ids = {}
+    for i, b in enumerate(m.bodies):
+        bid = f"b{i}"
+        ids[b.name] = bid
+        bodies.append({"id": bid, "name": b.name, "grounded": b.grounded,
+                       "x": float(b.q[0]), "y": float(b.q[1]), "theta": float(b.q[2]),
+                       "points": {k: v.tolist() for k, v in b.points.items()}})
+    joints = [{"type": j["type"], "a": ids[j["a"].name], "la": j["la"],
+               "b": ids[j["b"].name], "lb": j["lb"], "axisDeg": 0}
+              for j in m.joints if j["type"] != "motor"]
+    return {"bodies": bodies, "joints": joints,
+            "motor": {"body": ids[motor_body], "omega": 2 * np.pi, "theta0": 0.0}}
+
+
+def test_run_mechanism_roundtrip():
+    m = kin.build_four_bar()
+    res = kin.run_mechanism(_dict_from_mech(m), steps=180)
+    assert res["ok"] is True
+    assert res["structure"]["mobilite"] == 1
+    assert len(res["bodies"]) == 4
+    assert len(res["bodies"][1]["qs"]) == 181
+    assert res["max_residual"] < 1e-8
+
+
+def test_run_mechanism_sans_moteur():
+    m = kin.build_four_bar()
+    data = _dict_from_mech(m)
+    data["motor"] = None
+    res = kin.run_mechanism(data)
+    assert res["ok"] is False
+    assert "moteur" in res["error"].lower()

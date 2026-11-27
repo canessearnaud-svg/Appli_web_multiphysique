@@ -113,6 +113,23 @@ class Mechanism:
         phi_dot = (self.constraints(q, t + h) - self.constraints(q, t - h)) / (2 * h)
         return np.linalg.solve(J, -phi_dot)
 
+    def solve_position_robust(self, q0, t, tol=1e-10, max_iter=200):
+        q, ok = self.solve_position(q0, t, tol=tol)
+        if ok:
+            return q, True
+        q = q0.copy()
+        lam = 1e-3
+        for _ in range(max_iter):
+            phi = self.constraints(q, t)
+            if np.max(np.abs(phi)) < tol:
+                return q, True
+            J = self.jacobian(q, t)
+            A = J @ J.T + lam * np.eye(len(phi))
+            dq = -J.T @ np.linalg.solve(A, phi)
+            q = q + dq
+            lam *= 0.7
+        return q, self.residual(q, t) < 1e-8
+
 
 def simulate(mech, q0, t0, t1, steps):
     ts = np.linspace(t0, t1, steps + 1)
@@ -120,7 +137,7 @@ def simulate(mech, q0, t0, t1, steps):
     qdots = np.zeros_like(qs)
     q = q0.copy()
     for k, t in enumerate(ts):
-        q, ok = mech.solve_position(q, t)
+        q, ok = mech.solve_position_robust(q, t)
         if not ok:
             return ts[:k], qs[:k], qdots[:k], False
         qs[k] = q
@@ -178,4 +195,82 @@ def run_four_bar(crank=0.08, coupler=0.22, rocker=0.18, ground=0.30, omega=2.0 *
         "max_residual": m.residual(qs[-1], ts[-1]) if len(qs) else None,
         "q0": qs[0].tolist() if len(qs) else [],
         "qT": qs[-1].tolist() if len(qs) else [],
+    }
+
+
+JOINT_CONSTRAINTS = {"revolute": 2, "prismatic": 2, "fixed": 3}
+
+
+def analyze_structure(data):
+    bodies = data.get("bodies", [])
+    joints = data.get("joints", [])
+    n = len(bodies)
+    total_c = sum(JOINT_CONSTRAINTS.get(j.get("type"), 0) for j in joints)
+    raw = 3 * (n - 1) - total_c if n > 0 else 0
+    return {
+        "n_solids": n,
+        "n_liaisons": len(joints),
+        "somme_contraintes": total_c,
+        "mobilite": max(raw, 0),
+        "hyperstatisme": max(-raw, 0),
+        "liaisons": [
+            {"type": j.get("type"), "a": j.get("a"), "b": j.get("b"),
+             "contraintes": JOINT_CONSTRAINTS.get(j.get("type"), 0)}
+            for j in joints
+        ],
+    }
+
+
+def mechanism_from_dict(data):
+    m = Mechanism()
+    bodies = {}
+    for bd in data.get("bodies", []):
+        points = {k: tuple(v) for k, v in bd.get("points", {}).items()}
+        b = m.add_body(Body(bd.get("name", bd["id"]), points,
+                            x=bd.get("x", 0.0), y=bd.get("y", 0.0),
+                            theta=bd.get("theta", 0.0), grounded=bd.get("grounded", False)))
+        bodies[bd["id"]] = b
+    for j in data.get("joints", []):
+        a = bodies[j["a"]]
+        b = bodies[j["b"]]
+        if j["type"] == "revolute":
+            m.revolute(a, j["la"], b, j["lb"])
+        elif j["type"] == "prismatic":
+            ang = np.deg2rad(j.get("axisDeg", 0.0))
+            m.prismatic(a, j["la"], b, j["lb"], axis=(np.cos(ang), np.sin(ang)))
+        elif j["type"] == "fixed":
+            m.fixed(a, j["la"], b, j["lb"])
+    motor = data.get("motor")
+    if motor and motor.get("body") in bodies:
+        m.motor(bodies[motor["body"]], motor.get("omega", 2 * np.pi), motor.get("theta0", 0.0))
+    return m, bodies
+
+
+def run_mechanism(data, steps=240):
+    structure = analyze_structure(data)
+    motor = data.get("motor")
+    if not motor:
+        return {"ok": False, "error": "Ajoute un moteur (outil manivelle) sur un solide.",
+                "structure": structure}
+    m, bodies = mechanism_from_dict(data)
+    omega = float(motor.get("omega", 2 * np.pi))
+    period = 2 * np.pi / abs(omega) if omega else 1.0
+    q0 = m.pack()
+    ts, qs, qdots, ok = simulate(m, q0, 0.0, period, int(steps))
+    out_bodies = []
+    for bid, b in bodies.items():
+        series = []
+        for q in qs:
+            m.unpack(q)
+            series.append(b.q.tolist())
+        out_bodies.append({"id": bid, "name": b.name, "grounded": b.grounded, "qs": series})
+    return {
+        "ok": bool(ok),
+        "error": None if ok else "Assemblage impossible depuis cette position initiale.",
+        "t": ts.tolist(),
+        "period": period,
+        "omega": omega,
+        "bodies": out_bodies,
+        "max_residual": m.residual(qs[-1], ts[-1]) if len(qs) else None,
+        "structure": structure,
     }

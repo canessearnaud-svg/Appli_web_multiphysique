@@ -83,7 +83,7 @@ ligne de la base porte un `owner_id` filtré systématiquement : le multi-utilis
 
 ## Feuille de route
 
-1. Éditeur web de schéma cinématique 2D (symboles ISO 3952, graphe des liaisons, mobilité/hyperstatisme)
+1. Éditeur web de schéma cinématique 2D — v1 faite : canvas (solides, bâti, liaisons pivot / glissière / encastrement, moteur), sauvegarde par projet, analyse structurelle (mobilité m, hyperstatisme h, formule de Grübler planaire), simulation animée (solveur Newton–Raphson + Levenberg–Marquardt en repli). Reste : symboles ISO 3952 complets, graphe des liaisons, vue 3D
 2. Hydraulique 0D + solveur raide + vérin couplé mécanique ↔ fluide
 3. Pneumatique, électrotechnique, ladder IEC 61131-3
 4. Vue 3D (STEP/glTF depuis SolidWorks) + co-simulation FMI

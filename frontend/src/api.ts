@@ -37,6 +37,14 @@ export const api = {
   createProject: (name: string, description = "") =>
     req("/api/projects", { method: "POST", body: JSON.stringify({ name, description }) }),
   project: (id: number) => req(`/api/projects/${id}`),
+  diagrams: (pid: number) => req(`/api/projects/${pid}/diagrams`),
+  saveDiagram: (pid: number, domain: string, data: object) =>
+    req(`/api/projects/${pid}/diagrams/${domain}`, {
+      method: "PUT",
+      body: JSON.stringify({ domain, data }),
+    }),
+  analyze: (pid: number, domain: string, data: object) =>
+    req(`/api/projects/${pid}/analyze`, { method: "POST", body: JSON.stringify({ domain, data }) }),
   createRun: (pid: number, type: string, params: object) =>
     req(`/api/projects/${pid}/runs`, { method: "POST", body: JSON.stringify({ type, params }) }),
   run: (id: number) => req(`/api/runs/${id}`),

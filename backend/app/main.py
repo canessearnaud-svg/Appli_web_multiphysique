@@ -12,6 +12,7 @@ from .models import Diagram, Project, Run, Session as UserSession, User
 from .queue import queue
 from .schemas import DiagramIn, DiagramOut, ProjectIn, ProjectOut, RunIn, RunOut
 from .sim.engine import run_job
+from .sim.mechanics import kinematics
 
 app = FastAPI(title="Appli web multiphysique")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -79,6 +80,18 @@ def save_diagram(pid: int, domain: str, d: DiagramIn, user: User = Depends(get_c
     db.commit()
     db.refresh(diagram)
     return diagram
+
+
+@app.post("/api/projects/{pid}/analyze")
+def analyze(pid: int, payload: dict, user: User = Depends(get_current_user), db: DbSession = Depends(get_db)):
+    proj = db.query(Project).filter(Project.id == pid, Project.owner_id == user.id).first()
+    if proj is None:
+        raise HTTPException(status_code=404, detail="projet introuvable")
+    domain = payload.get("domain")
+    data = payload.get("data") or {}
+    if domain == "kinematics":
+        return kinematics.analyze_structure(data)
+    raise HTTPException(status_code=400, detail="domaine inconnu")
 
 
 @app.post("/api/projects/{pid}/runs", response_model=RunOut, status_code=201)
