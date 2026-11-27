@@ -50,6 +50,18 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
   const timer = useRef<number | null>(null);
   const raf = useRef<number | null>(null);
 
+  const stopAnim = () => {
+    if (raf.current) {
+      cancelAnimationFrame(raf.current);
+      raf.current = null;
+    }
+    setFrame(null);
+  };
+
+  useEffect(() => {
+    stopAnim();
+  }, [diagram]);
+
   useEffect(() => {
     api
       .diagrams(project.id)
@@ -93,7 +105,15 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
   const sx = (x: number) => view.ox + x * view.s;
   const sy = (y: number) => view.oy - y * view.s;
 
+  const pointInBody = (b: Body, w: Vec): boolean => {
+    const l = toLocal(b, w[0], w[1]);
+    return Math.abs(l[0]) <= b.w / 2 && Math.abs(l[1]) <= b.h / 2;
+  };
+
   const pickBody = (w: Vec): Body | null => {
+    for (let i = diagram.bodies.length - 1; i >= 0; i--) {
+      if (pointInBody(diagram.bodies[i], w)) return diagram.bodies[i];
+    }
     let best: Body | null = null;
     let bd = 1e9;
     for (const b of diagram.bodies) {
@@ -102,6 +122,22 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
       if (d < r && d < bd) {
         best = b;
         bd = d;
+      }
+    }
+    return best;
+  };
+
+  const pickPoint = (w: Vec): { bodyId: string; name: string } | null => {
+    let best: { bodyId: string; name: string } | null = null;
+    let bd = 0.05;
+    for (const b of diagram.bodies) {
+      for (const [k, l] of Object.entries(b.points)) {
+        const [wx, wy] = toWorldPoint(b.x, b.y, b.theta, l);
+        const d = Math.hypot(wx - w[0], wy - w[1]);
+        if (d < bd) {
+          best = { bodyId: b.id, name: k };
+          bd = d;
+        }
       }
     }
     return best;
@@ -116,7 +152,7 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
 
   const pickJoint = (w: Vec): Joint | null => {
     let best: Joint | null = null;
-    let bd = 0.04;
+    let bd = 0.06;
     for (const j of diagram.joints) {
       const [wx, wy] = anchorWorld(j);
       const d = Math.hypot(wx - w[0], wy - w[1]);
@@ -199,6 +235,21 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
       const j = pickJoint(w);
       if (j) {
         setDiagram((d) => ({ ...d, joints: d.joints.filter((x) => x.id !== j.id) }));
+        setMsg("Liaison supprimée.");
+        return;
+      }
+      const pt = pickPoint(w);
+      if (pt) {
+        setDiagram((d) => ({
+          ...d,
+          bodies: d.bodies.map((x) =>
+            x.id === pt.bodyId
+              ? { ...x, points: Object.fromEntries(Object.entries(x.points).filter(([k]) => k !== pt.name)) }
+              : x
+          ),
+          joints: d.joints.filter((x) => !(x.a === pt.bodyId && x.la === pt.name) && !(x.b === pt.bodyId && x.lb === pt.name)),
+        }));
+        setMsg("Point supprimé.");
         return;
       }
       if (b) {
@@ -303,6 +354,7 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
         <button onClick={simulate} disabled={!!run && (run.status === "running" || run.status === "queued")}>
           ▶ Simuler
         </button>
+        {frame !== null && <button onClick={stopAnim}>⏹ Arrêter l'animation</button>}
         <button onClick={() => setView((v) => ({ ...v, s: Math.min(3000, v.s * 1.2) }))}>Zoom +</button>
         <button onClick={() => setView((v) => ({ ...v, s: Math.max(50, v.s / 1.2) }))}>Zoom −</button>
         {msg && <span style={{ color: "#1f77b4" }}>{msg}</span>}
@@ -324,10 +376,12 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
             </button>
           ))}
           <div style={{ marginTop: 8, fontSize: 12, color: "#555" }}>
-            <div>Liaisons : cliquer sur un 1ᵉʳ solide,</div>
-            <div>puis sur un 2ᵉ solide (il est</div>
-            <div>automatiquement aligné sur le point).</div>
+            <div>Liaison : le 1ᵉʳ clic fixe la position</div>
+            <div>de la liaison, le 2ᵉ clic choisit le 2ᵉ</div>
+            <div>solide (aligné automatiquement dessus).</div>
             <div>Glissière : régler l'axe dans le panneau.</div>
+            <div>Supprimer : clic sur une liaison (point</div>
+            <div>rouge), un point isolé, ou un solide.</div>
             {pending && <div style={{ color: "#d62728" }}>… en attente du 2ᵉ solide</div>}
           </div>
         </div>
