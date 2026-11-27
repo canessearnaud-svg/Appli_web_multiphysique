@@ -128,7 +128,7 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
 
   const pickJoint = (w: Vec): JointNode | null => {
     let best: JointNode | null = null;
-    let bd = 0.05;
+    let bd = 0.08;
     for (const j of diagram.joints) {
       const [wx, wy] = jointWorld(j);
       const d = Math.hypot(wx - w[0], wy - w[1]);
@@ -173,6 +173,12 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
       return;
     }
     const j = pickJoint(w);
+    if (tool === "bati" || tool === "lier" || tool === "ajouter" || tool === "motor" || tool === "delete") {
+      if (!j) {
+        setMsg("Clique sur le symbole de la liaison (cercle, croix ou glisseur).");
+        return;
+      }
+    }
     if (tool === "bati") {
       if (!j) return;
       setDiagram((d) => {

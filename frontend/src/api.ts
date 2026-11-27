@@ -37,6 +37,7 @@ export const api = {
   createProject: (name: string, description = "") =>
     req("/api/projects", { method: "POST", body: JSON.stringify({ name, description }) }),
   project: (id: number) => req(`/api/projects/${id}`),
+  deleteProject: (id: number) => req(`/api/projects/${id}`, { method: "DELETE" }),
   diagrams: (pid: number) => req(`/api/projects/${pid}/diagrams`),
   saveDiagram: (pid: number, domain: string, data: object) =>
     req(`/api/projects/${pid}/diagrams/${domain}`, {

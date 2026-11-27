@@ -69,10 +69,23 @@ export default function Projects({ onOpen }: { onOpen: (p: Project) => void }) {
           <li
             key={p.id}
             onClick={() => onOpen(p)}
-            style={{ border: "1px solid #ddd", borderRadius: 6, padding: 12, marginBottom: 8, cursor: "pointer" }}
+            style={{ border: "1px solid #ddd", borderRadius: 6, padding: 12, marginBottom: 8, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
           >
-            <strong>{p.name}</strong>
-            <div style={{ color: "#555" }}>{p.description}</div>
+            <div>
+              <strong>{p.name}</strong>
+              <div style={{ color: "#555" }}>{p.description}</div>
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (window.confirm(`Supprimer le projet « ${p.name} » (schémas et simulations inclus) ?`)) {
+                  api.deleteProject(p.id).then(refresh).catch((err) => setError(String(err)));
+                }
+              }}
+              style={{ color: "#d62728", border: "1px solid #d62728", background: "#fff", borderRadius: 4, padding: "4px 10px", cursor: "pointer" }}
+            >
+              Supprimer
+            </button>
           </li>
         ))}
         {projects.length === 0 && <p>Aucun projet pour le moment.</p>}

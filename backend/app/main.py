@@ -82,6 +82,18 @@ def save_diagram(pid: int, domain: str, d: DiagramIn, user: User = Depends(get_c
     return diagram
 
 
+@app.delete("/api/projects/{pid}", status_code=204)
+def delete_project(pid: int, user: User = Depends(get_current_user), db: DbSession = Depends(get_db)):
+    proj = db.query(Project).filter(Project.id == pid, Project.owner_id == user.id).first()
+    if proj is None:
+        raise HTTPException(status_code=404, detail="projet introuvable")
+    db.query(Diagram).filter(Diagram.project_id == pid).delete()
+    db.query(Run).filter(Run.project_id == pid).delete()
+    db.delete(proj)
+    db.commit()
+    return None
+
+
 @app.post("/api/projects/{pid}/analyze")
 def analyze(pid: int, payload: dict, user: User = Depends(get_current_user), db: DbSession = Depends(get_db)):
     proj = db.query(Project).filter(Project.id == pid, Project.owner_id == user.id).first()
