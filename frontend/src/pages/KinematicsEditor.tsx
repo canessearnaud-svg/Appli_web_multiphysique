@@ -170,11 +170,20 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
         if (b.id === pending.aId) return;
         const lb = autoPointName(b);
         const j: Joint = { id: uid(), type: pending.type, a: pending.aId, la: pending.la, b: b.id, lb, axisDeg: 0 };
-        setDiagram((d) => ({
-          ...d,
-          bodies: d.bodies.map((x) => (x.id === b.id ? { ...x, points: { ...x.points, [lb]: toLocal(b, w[0], w[1]) } } : x)),
-          joints: [...d.joints, j],
-        }));
+        const dx = pending.pt[0] - w[0];
+        const dy = pending.pt[1] - w[1];
+        const snapTheta = pending.type !== "revolute";
+        setDiagram((d) => {
+          const a = d.bodies.find((x) => x.id === pending.aId);
+          const moved: Body = { ...b, x: b.x + dx, y: b.y + dy, theta: snapTheta && a ? a.theta : b.theta };
+          return {
+            ...d,
+            bodies: d.bodies.map((x) =>
+              x.id === b.id ? { ...moved, points: { ...x.points, [lb]: toLocal(moved, pending.pt[0], pending.pt[1]) } } : x
+            ),
+            joints: [...d.joints, j],
+          };
+        });
         setPending(null);
         setSel({ kind: "joint", id: j.id });
       }
@@ -182,7 +191,7 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
     }
     if (tool === "motor") {
       if (!b) return;
-      setDiagram((d) => ({ ...d, motor: { body: b.id, omega: 2 * Math.PI, theta0: 0 } }));
+      setDiagram((d) => ({ ...d, motor: { body: b.id, omega: 2 * Math.PI, theta0: b.theta } }));
       setMsg(`Moteur posé sur « ${b.name} » (ω = 2π rad/s, 1 tour/s).`);
       return;
     }
@@ -316,7 +325,8 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
           ))}
           <div style={{ marginTop: 8, fontSize: 12, color: "#555" }}>
             <div>Liaisons : cliquer sur un 1ᵉʳ solide,</div>
-            <div>puis sur un 2ᵉ solide.</div>
+            <div>puis sur un 2ᵉ solide (il est</div>
+            <div>automatiquement aligné sur le point).</div>
             <div>Glissière : régler l'axe dans le panneau.</div>
             {pending && <div style={{ color: "#d62728" }}>… en attente du 2ᵉ solide</div>}
           </div>
