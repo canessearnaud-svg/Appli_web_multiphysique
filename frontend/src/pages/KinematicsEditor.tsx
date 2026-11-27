@@ -3,48 +3,60 @@ import { api } from "../api";
 import type { Project } from "../App";
 import SvgPlot from "../components/SvgPlot";
 import {
-  Body,
   Diagram,
-  Joint,
+  JointNode,
   JointType,
+  Solid,
   Vec,
-  autoPointName,
+  assignJointToSolid,
   emptyDiagram,
-  toLocal,
+  ensureGround,
+  linkNewSolid,
+  removeJoint,
+  removeSolid,
+  solidFrame,
+  toBackendDiagram,
   toWorldPoint,
   uid,
 } from "../kinematics/model";
 
-type Tool = "select" | "body" | "ground" | "revolute" | "prismatic" | "fixed" | "motor" | "delete";
+type Tool = "select" | "revolute" | "prismatic" | "fixed" | "lier" | "ajouter" | "bati" | "motor" | "delete";
 
 const TOOLS: { id: Tool; label: string }[] = [
-  { id: "select", label: "Sélection / déplacer / panoramique" },
-  { id: "body", label: "+ Solide" },
-  { id: "ground", label: "+ Bâti (fixe)" },
-  { id: "revolute", label: "Liaison pivot" },
-  { id: "prismatic", label: "Liaison glissière" },
+  { id: "select", label: "Sélection / déplacer" },
+  { id: "revolute", label: "Pivot (clic = centre exact)" },
+  { id: "prismatic", label: "Glissière" },
   { id: "fixed", label: "Encastrement" },
-  { id: "motor", label: "Moteur (manivelle)" },
+  { id: "lier", label: "Relier 2 liaisons → nouveau solide" },
+  { id: "ajouter", label: "Ajouter une liaison au solide sélectionné" },
+  { id: "bati", label: "Attacher une liaison au BÂTI" },
+  { id: "motor", label: "Moteur sur le solide d'une liaison" },
   { id: "delete", label: "Supprimer" },
 ];
 
-const JOINT_LABEL: Record<JointType, string> = {
-  revolute: "Pivot",
-  prismatic: "Glissière",
-  fixed: "Encastrement",
+const JOINT_LABEL: Record<JointType, string> = { revolute: "Pivot", prismatic: "Glissière", fixed: "Encastrement" };
+const SOLID_COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b"];
+
+const distToSegment = (p: Vec, a: Vec, b: Vec): number => {
+  const abx = b[0] - a[0];
+  const aby = b[1] - a[1];
+  const den = abx * abx + aby * aby;
+  const t = den > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / den)) : 0;
+  return Math.hypot(p[0] - (a[0] + t * abx), p[1] - (a[1] + t * aby));
 };
 
 export default function KinematicsEditor({ project, onBack }: { project: Project; onBack: () => void }) {
   const [diagram, setDiagram] = useState<Diagram>(emptyDiagram());
   const [tool, setTool] = useState<Tool>("select");
-  const [sel, setSel] = useState<{ kind: "body" | "joint"; id: string } | null>(null);
-  const [pending, setPending] = useState<{ type: JointType; aId: string; la: string; pt: Vec } | null>(null);
+  const [sel, setSel] = useState<{ kind: "joint" | "solid"; id: string } | null>(null);
+  const [pendingLink, setPendingLink] = useState<string | null>(null);
   const [view, setView] = useState({ s: 300, ox: 420, oy: 280 });
   const [msg, setMsg] = useState("");
   const [analysis, setAnalysis] = useState<any>(null);
   const [run, setRun] = useState<any>(null);
   const [frame, setFrame] = useState<number | null>(null);
-  const drag = useRef<{ bodyId: string } | null>(null);
+  const [backendDiag, setBackendDiag] = useState<any>(null);
+  const drag = useRef<{ jointId: string } | null>(null);
   const pan = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const timer = useRef<number | null>(null);
@@ -67,7 +79,7 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
       .diagrams(project.id)
       .then((list) => {
         const d = list.find((x: any) => x.domain === "kinematics");
-        if (d?.data?.bodies) setDiagram(d.data);
+        if (d?.data?.joints && d?.data?.solids) setDiagram(d.data);
       })
       .catch(() => {});
     return () => {
@@ -98,63 +110,27 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
 
   const toWorldXY = (e: React.MouseEvent<SVGSVGElement>): Vec => {
     const rect = svgRef.current!.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    return [(mx - view.ox) / view.s, (view.oy - my) / view.s];
+    return [((e.clientX - rect.left) - view.ox) / view.s, (view.oy - (e.clientY - rect.top)) / view.s];
   };
   const sx = (x: number) => view.ox + x * view.s;
   const sy = (y: number) => view.oy - y * view.s;
 
-  const pointInBody = (b: Body, w: Vec): boolean => {
-    const l = toLocal(b, w[0], w[1]);
-    return Math.abs(l[0]) <= b.w / 2 && Math.abs(l[1]) <= b.h / 2;
+  const jointWorld = (j: JointNode): Vec => {
+    if (frame !== null && run?.result?.ok && backendDiag) {
+      const bj = backendDiag.joints.find((x: any) => x.node === j.id);
+      const rb = bj && run.result.bodies.find((x: any) => x.id === bj.a);
+      const q = rb?.qs?.[frame];
+      const pt = rb?.points?.[bj?.la];
+      if (bj && q && pt) return toWorldPoint(q[0], q[1], q[2], pt);
+    }
+    return [j.x, j.y];
   };
 
-  const pickBody = (w: Vec): Body | null => {
-    for (let i = diagram.bodies.length - 1; i >= 0; i--) {
-      if (pointInBody(diagram.bodies[i], w)) return diagram.bodies[i];
-    }
-    let best: Body | null = null;
-    let bd = 1e9;
-    for (const b of diagram.bodies) {
-      const d = Math.hypot(b.x - w[0], b.y - w[1]);
-      const r = Math.max(b.w, b.h) / 2 + 0.03;
-      if (d < r && d < bd) {
-        best = b;
-        bd = d;
-      }
-    }
-    return best;
-  };
-
-  const pickPoint = (w: Vec): { bodyId: string; name: string } | null => {
-    let best: { bodyId: string; name: string } | null = null;
+  const pickJoint = (w: Vec): JointNode | null => {
+    let best: JointNode | null = null;
     let bd = 0.05;
-    for (const b of diagram.bodies) {
-      for (const [k, l] of Object.entries(b.points)) {
-        const [wx, wy] = toWorldPoint(b.x, b.y, b.theta, l);
-        const d = Math.hypot(wx - w[0], wy - w[1]);
-        if (d < bd) {
-          best = { bodyId: b.id, name: k };
-          bd = d;
-        }
-      }
-    }
-    return best;
-  };
-
-  const anchorWorld = (j: Joint): Vec => {
-    const a = diagram.bodies.find((b) => b.id === j.a);
-    if (!a || !a.points[j.la]) return [0, 0];
-    const [x, y, th] = qOf(a);
-    return toWorldPoint(x, y, th, a.points[j.la]);
-  };
-
-  const pickJoint = (w: Vec): Joint | null => {
-    let best: Joint | null = null;
-    let bd = 0.06;
     for (const j of diagram.joints) {
-      const [wx, wy] = anchorWorld(j);
+      const [wx, wy] = jointWorld(j);
       const d = Math.hypot(wx - w[0], wy - w[1]);
       if (d < bd) {
         best = j;
@@ -164,124 +140,109 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
     return best;
   };
 
-  const qOf = (b: Body): [number, number, number] => {
-    if (frame !== null && run?.result?.ok) {
-      const rb = run.result.bodies.find((x: any) => x.id === b.id);
-      if (rb?.qs?.[frame]) return rb.qs[frame] as [number, number, number];
+  const pickSolid = (w: Vec): Solid | null => {
+    let best: Solid | null = null;
+    let bd = 0.04;
+    for (const s of diagram.solids) {
+      const pts = s.jointIds.map((id) => jointWorld(diagram.joints.find((j) => j.id === id)!));
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const d = distToSegment(w, pts[i], pts[i + 1]);
+        if (d < bd) {
+          best = s;
+          bd = d;
+        }
+      }
+      if (pts.length === 1) {
+        const d = Math.hypot(pts[0][0] - w[0], pts[0][1] - w[1]);
+        if (d < bd) {
+          best = s;
+          bd = d;
+        }
+      }
     }
-    return [b.x, b.y, b.theta];
+    return best;
   };
 
   const onDown = (e: React.MouseEvent<SVGSVGElement>) => {
     const w = toWorldXY(e);
-    if (tool === "body" || tool === "ground") {
-      const id = uid();
-      const b: Body = {
-        id,
-        name: (tool === "ground" ? "Bâti-" : "Solide-") + id.slice(0, 3),
-        grounded: tool === "ground",
-        x: w[0],
-        y: w[1],
-        theta: 0,
-        w: 0.12,
-        h: 0.07,
-        points: {},
-      };
-      setDiagram((d) => ({ ...d, bodies: [...d.bodies, b] }));
-      setSel({ kind: "body", id });
-      return;
-    }
-    const b = pickBody(w);
     if (tool === "revolute" || tool === "prismatic" || tool === "fixed") {
-      if (!b) return;
-      if (!pending) {
-        const la = autoPointName(b);
-        const local = toLocal(b, w[0], w[1]);
-        setDiagram((d) => ({
-          ...d,
-          bodies: d.bodies.map((x) => (x.id === b.id ? { ...x, points: { ...x.points, [la]: local } } : x)),
-        }));
-        setPending({ type: tool, aId: b.id, la, pt: [w[0], w[1]] });
-      } else {
-        if (b.id === pending.aId) return;
-        const lb = autoPointName(b);
-        const j: Joint = { id: uid(), type: pending.type, a: pending.aId, la: pending.la, b: b.id, lb, axisDeg: 0 };
-        const snapTheta = pending.type !== "revolute";
-        setDiagram((d) => {
-          const a = d.bodies.find((x) => x.id === pending.aId);
-          const bb = d.bodies.find((x) => x.id === b.id);
-          if (!a || !bb) return d;
-          const moveB = !bb.grounded;
-          const moveA = !moveB && !a.grounded;
-          const movedId = moveB ? bb.id : moveA ? a.id : null;
-          const delta: Vec = moveB
-            ? [pending.pt[0] - w[0], pending.pt[1] - w[1]]
-            : [w[0] - pending.pt[0], w[1] - pending.pt[1]];
-          const target: Vec = moveB ? pending.pt : w;
-          const bodies = d.bodies.map((x) => {
-            if (movedId && x.id === movedId) {
-              const other = moveB ? a : bb;
-              const moved: Body = { ...x, x: x.x + delta[0], y: x.y + delta[1], theta: snapTheta ? other.theta : x.theta };
-              const points = moveB ? { ...x.points, [lb]: toLocal(moved, target[0], target[1]) } : x.points;
-              return { ...moved, points };
-            }
-            if (moveA && x.id === bb.id) {
-              return { ...x, points: { ...x.points, [lb]: toLocal(x, w[0], w[1]) } };
-            }
-            return x;
-          });
-          return { ...d, bodies, joints: [...d.joints, j] };
-        });
-        setPending(null);
-        setSel({ kind: "joint", id: j.id });
-      }
-      return;
-    }
-    if (tool === "motor") {
-      if (!b) return;
-      setDiagram((d) => ({ ...d, motor: { body: b.id, omega: 2 * Math.PI, theta0: b.theta } }));
-      setMsg(`Moteur posé sur « ${b.name} » (ω = 2π rad/s, 1 tour/s).`);
-      return;
-    }
-    if (tool === "delete") {
-      const j = pickJoint(w);
-      if (j) {
-        setDiagram((d) => ({ ...d, joints: d.joints.filter((x) => x.id !== j.id) }));
-        setMsg("Liaison supprimée.");
-        return;
-      }
-      const pt = pickPoint(w);
-      if (pt) {
-        setDiagram((d) => ({
-          ...d,
-          bodies: d.bodies.map((x) =>
-            x.id === pt.bodyId
-              ? { ...x, points: Object.fromEntries(Object.entries(x.points).filter(([k]) => k !== pt.name)) }
-              : x
-          ),
-          joints: d.joints.filter((x) => !(x.a === pt.bodyId && x.la === pt.name) && !(x.b === pt.bodyId && x.lb === pt.name)),
-        }));
-        setMsg("Point supprimé.");
-        return;
-      }
-      if (b) {
-        setDiagram((d) => ({
-          ...d,
-          bodies: d.bodies.filter((x) => x.id !== b.id),
-          joints: d.joints.filter((x) => x.a !== b.id && x.b !== b.id),
-          motor: d.motor?.body === b.id ? null : d.motor,
-        }));
-      }
+      const id = uid();
+      const j: JointNode = { id, type: tool, x: w[0], y: w[1], axisDeg: 0, sideA: null, sideB: null };
+      setDiagram((d) => ({ ...d, joints: [...d.joints, j] }));
+      setSel({ kind: "joint", id });
       return;
     }
     const j = pickJoint(w);
-    if (j) {
-      setSel({ kind: "joint", id: j.id });
+    if (tool === "bati") {
+      if (!j) return;
+      setDiagram((d) => {
+        const g = ensureGround(d);
+        return assignJointToSolid(g, j.id, g.groundId!);
+      });
+      setMsg("Liaison attachée au bâti.");
       return;
     }
-    if (b) {
-      setSel({ kind: "body", id: b.id });
-      drag.current = { bodyId: b.id };
+    if (tool === "lier") {
+      if (!j) return;
+      if (!pendingLink) {
+        setPendingLink(j.id);
+        setMsg("Clique maintenant la 2ᵉ liaison du même solide.");
+        return;
+      }
+      if (pendingLink === j.id) {
+        setPendingLink(null);
+        return;
+      }
+      const res = linkNewSolid(diagram, pendingLink, j.id);
+      setDiagram(res.diagram);
+      setMsg(res.error ?? "Nouveau solide créé (relie les 2 liaisons).");
+      setPendingLink(null);
+      if (!res.error) setSel({ kind: "solid", id: res.diagram.solids[res.diagram.solids.length - 1].id });
+      return;
+    }
+    if (tool === "ajouter") {
+      if (!j) return;
+      if (sel?.kind !== "solid") {
+        setMsg("Sélectionne d'abord un solide dans le panneau de droite.");
+        return;
+      }
+      setDiagram((d) => assignJointToSolid(d, j.id, sel.id));
+      setMsg("Liaison ajoutée au solide sélectionné.");
+      return;
+    }
+    if (tool === "motor") {
+      if (!j) return;
+      const sid = j.sideA && j.sideA !== diagram.groundId ? j.sideA : j.sideB;
+      const s = sid ? diagram.solids.find((x) => x.id === sid) : null;
+      if (!s || s.grounded) {
+        setMsg("Le moteur se met sur un solide mobile (liaison entre ce solide et le bâti).");
+        return;
+      }
+      setDiagram((d) => ({ ...d, motor: { solid: s.id, omega: 2 * Math.PI, theta0: solidFrame(s, d).theta } }));
+      setMsg(`Moteur sur « ${s.name} » (ω = 2π rad/s, 1 tour/s).`);
+      return;
+    }
+    if (tool === "delete") {
+      if (j) {
+        setDiagram((d) => removeJoint(d, j.id));
+        setMsg("Liaison supprimée.");
+        return;
+      }
+      const s = pickSolid(w);
+      if (s) {
+        setDiagram((d) => removeSolid(d, s.id));
+        setMsg(`Solide « ${s.name} » supprimé (ses liaisons restent, détachées).`);
+      }
+      return;
+    }
+    if (j) {
+      setSel({ kind: "joint", id: j.id });
+      drag.current = { jointId: j.id };
+      return;
+    }
+    const s = pickSolid(w);
+    if (s) {
+      setSel({ kind: "solid", id: s.id });
       return;
     }
     pan.current = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
@@ -290,13 +251,17 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (drag.current) {
       const w = toWorldXY(e);
-      const id = drag.current.bodyId;
+      const id = drag.current.jointId;
       setDiagram((d) => ({
         ...d,
-        bodies: d.bodies.map((b) => (b.id === id && !b.grounded ? { ...b, x: w[0], y: w[1] } : b)),
+        joints: d.joints.map((j) => (j.id === id ? { ...j, x: w[0], y: w[1] } : j)),
       }));
     } else if (pan.current) {
-      setView((v) => ({ ...v, ox: pan.current!.ox + (e.clientX - pan.current!.x), oy: pan.current!.oy + (e.clientY - pan.current!.y) }));
+      setView((v) => ({
+        ...v,
+        ox: pan.current!.ox + (e.clientX - pan.current!.x),
+        oy: pan.current!.oy + (e.clientY - pan.current!.y),
+      }));
     }
   };
   const onUp = () => {
@@ -304,13 +269,8 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
     pan.current = null;
   };
 
-  const selBody = sel?.kind === "body" ? diagram.bodies.find((b) => b.id === sel.id) : null;
   const selJoint = sel?.kind === "joint" ? diagram.joints.find((j) => j.id === sel.id) : null;
-
-  const updateBody = (patch: Partial<Body>) =>
-    setDiagram((d) => ({ ...d, bodies: d.bodies.map((b) => (b.id === sel?.id ? { ...b, ...patch } : b)) }));
-  const updateJoint = (patch: Partial<Joint>) =>
-    setDiagram((d) => ({ ...d, joints: d.joints.map((j) => (j.id === sel?.id ? { ...j, ...patch } : j)) }));
+  const selSolid = sel?.kind === "solid" ? diagram.solids.find((s) => s.id === sel.id) : null;
 
   const save = async () => {
     try {
@@ -323,7 +283,8 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
 
   const analyze = async () => {
     try {
-      setAnalysis(await api.analyze(project.id, "kinematics", diagram));
+      const bd = toBackendDiagram(diagram);
+      setAnalysis(await api.analyze(project.id, "kinematics", bd));
       setMsg("");
     } catch (e) {
       setMsg(String(e));
@@ -335,7 +296,9 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
     setRun(null);
     setAnalysis(null);
     try {
-      const r = await api.createRun(project.id, "kinematics", { diagram, steps: 240 });
+      const bd = toBackendDiagram(diagram);
+      setBackendDiag(bd);
+      const r = await api.createRun(project.id, "kinematics", { diagram: bd, steps: 240 });
       setRun(r);
       if (timer.current) window.clearInterval(timer.current);
       timer.current = window.setInterval(async () => {
@@ -352,12 +315,12 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
 
   const motorThetaSeries = () => {
     if (!run?.result?.ok || !diagram.motor) return null;
-    const rb = run.result.bodies.find((x: any) => x.id === diagram.motor!.body);
+    const rb = run.result.bodies.find((x: any) => x.id === diagram.motor!.solid);
     if (!rb) return null;
     return { x: run.result.t, y: rb.qs.map((q: number[]) => q[2]) };
   };
 
-  const inputStyle = { width: 80, padding: 4 };
+  const inputStyle = { width: 90, padding: 4 };
 
   return (
     <div style={{ fontFamily: "sans-serif", padding: 12 }}>
@@ -383,22 +346,26 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
               key={t.id}
               onClick={() => {
                 setTool(t.id);
-                setPending(null);
+                setPendingLink(null);
               }}
-              style={{ padding: "6px 10px", textAlign: "left", background: tool === t.id ? "#cfe3ff" : "#fff", border: "1px solid #bbb", borderRadius: 4, cursor: "pointer" }}
+              style={{
+                padding: "6px 10px",
+                textAlign: "left",
+                background: tool === t.id ? "#cfe3ff" : "#fff",
+                border: "1px solid #bbb",
+                borderRadius: 4,
+                cursor: "pointer",
+              }}
             >
               {t.label}
             </button>
           ))}
           <div style={{ marginTop: 8, fontSize: 12, color: "#555" }}>
-            <div>Liaison : le 1ᵉʳ clic fixe la position</div>
-            <div>de la liaison, le 2ᵉ clic choisit le 2ᵉ</div>
-            <div>solide (aligné automatiquement dessus).</div>
-            <div>Glissière : régler l'axe dans le panneau.</div>
-            <div>Supprimer : clic sur une liaison (point</div>
-            <div>rouge), un point isolé, ou un solide.</div>
-            <div>Le bâti (gris) ne bouge jamais.</div>
-            {pending && <div style={{ color: "#d62728" }}>… en attente du 2ᵉ solide</div>}
+            <div>Méthode : on pose d'abord les</div>
+            <div>liaisons (clic = centre exact),</div>
+            <div>puis on les relie en solides.</div>
+            <div>Un solide = un trait entre ses liaisons.</div>
+            {pendingLink && <div style={{ color: "#d62728" }}>… en attente de la 2ᵉ liaison</div>}
           </div>
         </div>
 
@@ -414,109 +381,115 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
         >
           <line x1={0} y1={sy(0)} x2={840} y2={sy(0)} stroke="#ddd" />
           <line x1={sx(0)} y1={0} x2={sx(0)} y2={520} stroke="#ddd" />
+          {diagram.solids.map((s, i) => {
+            const pts = s.jointIds.map((id) => jointWorld(diagram.joints.find((j) => j.id === id)!));
+            if (pts.length === 0) return null;
+            const color = s.grounded ? "#888" : SOLID_COLORS[i % SOLID_COLORS.length];
+            const selS = sel?.kind === "solid" && sel.id === s.id;
+            const label =
+              pts.reduce((a, p) => [a[0] + p[0] / pts.length, a[1] + p[1] / pts.length], [0, 0] as Vec);
+            return (
+              <g key={s.id}>
+                {pts.length > 1 && (
+                  <polyline
+                    points={pts.map((p) => `${sx(p[0])},${sy(p[1])}`).join(" ")}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth={selS ? 7 : 4}
+                    strokeOpacity={s.grounded ? 0.5 : 0.8}
+                  />
+                )}
+                <text x={sx(label[0])} y={sy(label[1]) - 10} textAnchor="middle" fontSize={13} fill={color} fontWeight="bold">
+                  {s.name}
+                  {s.grounded ? " (bâti)" : ""}
+                  {diagram.motor?.solid === s.id ? "  ω" : ""}
+                </text>
+              </g>
+            );
+          })}
           {diagram.joints.map((j) => {
-            const [wx, wy] = anchorWorld(j);
+            const [wx, wy] = jointWorld(j);
             const X = sx(wx);
             const Y = sy(wy);
             const selJ = sel?.kind === "joint" && sel.id === j.id;
+            const isPending = pendingLink === j.id;
+            const ang = (j.axisDeg * Math.PI) / 180;
             if (j.type === "revolute")
               return (
                 <g key={j.id}>
-                  <circle cx={X} cy={Y} r={7} fill="#fff" stroke={selJ ? "#d62728" : "#1f77b4"} strokeWidth={selJ ? 3 : 2} />
+                  <circle cx={X} cy={Y} r={isPending ? 10 : 7} fill="#fff" stroke={selJ || isPending ? "#d62728" : "#1f77b4"} strokeWidth={selJ || isPending ? 3 : 2} />
                   <circle cx={X} cy={Y} r={2.5} fill="#1f77b4" />
                 </g>
               );
             if (j.type === "fixed")
               return (
-                <g key={j.id} stroke={selJ ? "#d62728" : "#7f7f7f"} strokeWidth={selJ ? 3 : 2}>
+                <g key={j.id} stroke={selJ || isPending ? "#d62728" : "#7f7f7f"} strokeWidth={selJ || isPending ? 3 : 2}>
                   <line x1={X - 7} y1={Y - 7} x2={X + 7} y2={Y + 7} />
                   <line x1={X - 7} y1={Y + 7} x2={X + 7} y2={Y - 7} />
                 </g>
               );
-            const ang = (j.axisDeg * Math.PI) / 180;
             const ddx = Math.cos(ang) * 16;
             const ddy = -Math.sin(ang) * 16;
             return (
               <g key={j.id}>
-                <circle cx={X} cy={Y} r={6} fill="#fff" stroke={selJ ? "#d62728" : "#2ca02c"} strokeWidth={selJ ? 3 : 2} />
+                <circle cx={X} cy={Y} r={6} fill="#fff" stroke={selJ || isPending ? "#d62728" : "#2ca02c"} strokeWidth={selJ || isPending ? 3 : 2} />
                 <line x1={X - ddx} y1={Y - ddy} x2={X + ddx} y2={Y + ddy} stroke="#2ca02c" strokeWidth={2} />
               </g>
             );
           })}
-          {diagram.bodies.map((b) => {
-            const [x, y, th] = qOf(b);
-            const X = sx(x);
-            const Y = sy(y);
-            const selB = sel?.kind === "body" && sel.id === b.id;
-            return (
-              <g key={b.id} transform={`translate(${X} ${Y}) rotate(${-th * 180 / Math.PI})`} style={{ cursor: "pointer" }}>
-                <rect
-                  x={-b.w * view.s / 2}
-                  y={-b.h * view.s / 2}
-                  width={b.w * view.s}
-                  height={b.h * view.s}
-                  fill={b.grounded ? "#d8d8d8" : selB ? "#cfe3ff" : "#eef4ff"}
-                  stroke="#335"
-                  strokeWidth={selB ? 2 : 1}
-                />
-                <text x={0} y={-b.h * view.s / 2 - 6} textAnchor="middle" fontSize={12} fill="#335">
-                  {b.name}
-                  {b.grounded ? " (bâti)" : ""}
-                </text>
-                {Object.entries(b.points).map(([k, l]) => (
-                  <g key={k}>
-                    <circle cx={l[0] * view.s} cy={-l[1] * view.s} r={4} fill="#d62728" />
-                    <text x={l[0] * view.s + 6} y={-l[1] * view.s - 4} fontSize={10} fill="#d62728">
-                      {k}
-                    </text>
-                  </g>
-                ))}
-              </g>
-            );
-          })}
-          {pending && <circle cx={sx(pending.pt[0])} cy={sy(pending.pt[1])} r={9} fill="none" stroke="#d62728" strokeWidth={2} strokeDasharray="4 3" />}
         </svg>
 
-        <div style={{ width: 240, border: "1px solid #ccc", borderRadius: 6, padding: 10, fontSize: 13, height: "fit-content" }}>
+        <div style={{ width: 260, border: "1px solid #ccc", borderRadius: 6, padding: 10, fontSize: 13, height: "fit-content" }}>
           <h3 style={{ marginTop: 0 }}>Propriétés</h3>
-          {selBody && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div><strong>{selBody.name}</strong></div>
-              <label>nom <input style={inputStyle} value={selBody.name} onChange={(e) => updateBody({ name: e.target.value })} /></label>
-              <label>x (m) <input style={inputStyle} type="number" step={0.01} value={+selBody.x.toFixed(4)} onChange={(e) => updateBody({ x: parseFloat(e.target.value) || 0 })} /></label>
-              <label>y (m) <input style={inputStyle} type="number" step={0.01} value={+selBody.y.toFixed(4)} onChange={(e) => updateBody({ y: parseFloat(e.target.value) || 0 })} /></label>
-              <label>angle (°) <input style={inputStyle} type="number" value={+(selBody.theta * 180 / Math.PI).toFixed(1)} onChange={(e) => updateBody({ theta: (parseFloat(e.target.value) || 0) * Math.PI / 180 })} /></label>
-              <label>largeur (m) <input style={inputStyle} type="number" step={0.01} value={selBody.w} onChange={(e) => updateBody({ w: parseFloat(e.target.value) || 0.1 })} /></label>
-              <label>hauteur (m) <input style={inputStyle} type="number" step={0.01} value={selBody.h} onChange={(e) => updateBody({ h: parseFloat(e.target.value) || 0.05 })} /></label>
-              <label><input type="checkbox" checked={selBody.grounded} onChange={(e) => updateBody({ grounded: e.target.checked })} /> bâti (fixe)</label>
-            </div>
-          )}
           {selJoint && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div><strong>Liaison : {JOINT_LABEL[selJoint.type]}</strong></div>
-              <div>entre {diagram.bodies.find((b) => b.id === selJoint.a)?.name} ({selJoint.la}) et {diagram.bodies.find((b) => b.id === selJoint.b)?.name} ({selJoint.lb})</div>
+              <div><strong>{JOINT_LABEL[selJoint.type]}</strong></div>
+              <label>x (m) <input style={inputStyle} type="number" step={0.005} value={+selJoint.x.toFixed(4)} onChange={(e) => setDiagram((d) => ({ ...d, joints: d.joints.map((j) => (j.id === selJoint.id ? { ...j, x: parseFloat(e.target.value) || 0 } : j)) }))} /></label>
+              <label>y (m) <input style={inputStyle} type="number" step={0.005} value={+selJoint.y.toFixed(4)} onChange={(e) => setDiagram((d) => ({ ...d, joints: d.joints.map((j) => (j.id === selJoint.id ? { ...j, y: parseFloat(e.target.value) || 0 } : j)) }))} /></label>
               {selJoint.type === "prismatic" && (
-                <label>axe (°) <input style={inputStyle} type="number" value={selJoint.axisDeg} onChange={(e) => updateJoint({ axisDeg: parseFloat(e.target.value) || 0 })} /></label>
+                <label>axe (°) <input style={inputStyle} type="number" value={selJoint.axisDeg} onChange={(e) => setDiagram((d) => ({ ...d, joints: d.joints.map((j) => (j.id === selJoint.id ? { ...j, axisDeg: parseFloat(e.target.value) || 0 } : j)) }))} /></label>
               )}
+              <div style={{ color: "#777" }}>
+                solides : {solidName(selJoint.sideA)} ↔ {solidName(selJoint.sideB)}
+              </div>
             </div>
           )}
-          {!selBody && !selJoint && <div style={{ color: "#777" }}>Sélectionne un solide ou une liaison…</div>}
+
+          <h3>Solides</h3>
+          {diagram.solids.length === 0 && <div style={{ color: "#777" }}>Aucun solide. Pose des liaisons puis « Relier ».</div>}
+          {diagram.solids.map((s, i) => (
+            <div key={s.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+              <button
+                onClick={() => setSel({ kind: "solid", id: s.id })}
+                style={{ border: "1px solid " + (s.grounded ? "#888" : SOLID_COLORS[i % SOLID_COLORS.length]), background: sel?.kind === "solid" && sel.id === s.id ? "#cfe3ff" : "#fff", borderRadius: 4, padding: "3px 8px", cursor: "pointer" }}
+              >
+                {s.name}
+                {s.grounded ? " (bâti)" : ""}
+              </button>
+              <span style={{ color: "#777" }}>{s.jointIds.length} liaison(s)</span>
+            </div>
+          ))}
+          {selSolid && (
+            <button onClick={() => { setDiagram((d) => removeSolid(d, selSolid.id)); setSel(null); }} style={{ color: "#d62728" }}>
+              Supprimer « {selSolid.name} »
+            </button>
+          )}
 
           <h3>Moteur</h3>
           {diagram.motor ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div>Solide : {diagram.bodies.find((b) => b.id === diagram.motor!.body)?.name}</div>
+              <div>Solide : {diagram.solids.find((s) => s.id === diagram.motor!.solid)?.name}</div>
               <label>ω (rad/s) <input style={inputStyle} type="number" step={0.1} value={+diagram.motor.omega.toFixed(3)} onChange={(e) => setDiagram((d) => (d.motor ? { ...d, motor: { ...d.motor, omega: parseFloat(e.target.value) || 1 } } : d))} /></label>
               <button onClick={() => setDiagram((d) => ({ ...d, motor: null }))}>Retirer le moteur</button>
             </div>
           ) : (
-            <div style={{ color: "#777" }}>Aucun moteur. Utilise l'outil « Moteur ».</div>
+            <div style={{ color: "#777" }}>Aucun moteur. Outil « Moteur » sur une liaison d'un solide mobile.</div>
           )}
 
           {analysis && (
             <div style={{ marginTop: 10, borderTop: "1px solid #ddd", paddingTop: 8 }}>
               <h3>Analyse structurelle</h3>
-              <div>Solides (classes d'équivalence) : <strong>{analysis.n_solids}</strong></div>
+              <div>Solides : <strong>{analysis.n_solids}</strong></div>
               <div>Liaisons : <strong>{analysis.n_liaisons}</strong> (Σ contraintes = {analysis.somme_contraintes})</div>
               <div>Mobilité m = <strong>{analysis.mobilite}</strong></div>
               <div>Hyperstatisme h = <strong>{analysis.hyperstatisme}</strong></div>
@@ -531,11 +504,16 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
       )}
       {run?.status === "done" && run.result?.ok && motorThetaSeries() && (
         <div style={{ marginTop: 16 }}>
-          <h3>Angle du solide moteur vs temps (animation en cours sur le schéma)</h3>
+          <h3>Angle du solide moteur vs temps (animation en cours)</h3>
           <SvgPlot series={[{ x: motorThetaSeries()!.x, y: motorThetaSeries()!.y, color: "#1f77b4" }]} />
           <p style={{ color: "#555" }}>Résidu max des contraintes : {run.result.max_residual?.toExponential(2)}</p>
         </div>
       )}
     </div>
   );
+
+  function solidName(id: string | null): string {
+    if (!id) return "—";
+    return diagram.solids.find((s) => s.id === id)?.name ?? "—";
+  }
 }

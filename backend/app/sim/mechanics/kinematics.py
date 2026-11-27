@@ -59,36 +59,62 @@ class Mechanism:
         for i, b in enumerate(self.free_bodies()):
             b.q = q[3 * i:3 * i + 3].copy()
 
-    def constraints(self, q, t=0.0):
+    def _build(self, q, t=0.0):
         self.unpack(q)
-        out = []
+        free = self.free_bodies()
+        col = {id(b): 3 * i for i, b in enumerate(free)}
+        n = 3 * len(free)
+
+        def dpoint(b, label):
+            x, y, th = b.q
+            px, py = b.points[label]
+            c, s = np.cos(th), np.sin(th)
+            p = np.array([x + c * px - s * py, y + s * px + c * py])
+            dpdth = np.array([-s * px - c * py, c * px - s * py])
+            return p, dpdth
+
+        rows = []
         for j in self.joints:
             kind = j["type"]
             if kind in ("revolute", "fixed"):
-                pa = point_world(j["a"], j["la"])
-                pb = point_world(j["b"], j["lb"])
-                out.append(pa[0] - pb[0])
-                out.append(pa[1] - pb[1])
+                pa, da = dpoint(j["a"], j["la"])
+                pb, db = dpoint(j["b"], j["lb"])
+                r = pa - pb
+                rows.append((r[0], [(j["a"], np.array([1.0, 0.0, da[0]])), (j["b"], np.array([-1.0, 0.0, -db[0]]))]))
+                rows.append((r[1], [(j["a"], np.array([0.0, 1.0, da[1]])), (j["b"], np.array([0.0, -1.0, -db[1]]))]))
                 if kind == "fixed":
-                    out.append(j["a"].q[2] - j["b"].q[2])
+                    rows.append((j["a"].q[2] - j["b"].q[2],
+                                 [(j["a"], np.array([0.0, 0.0, 1.0])), (j["b"], np.array([0.0, 0.0, -1.0]))]))
             elif kind == "prismatic":
-                pa = point_world(j["a"], j["la"])
-                pb = point_world(j["b"], j["lb"])
+                pa, da = dpoint(j["a"], j["la"])
+                pb, db = dpoint(j["b"], j["lb"])
                 ax, ay = j["axis"]
-                out.append(-ay * (pb[0] - pa[0]) + ax * (pb[1] - pa[1]))
-                out.append(j["b"].q[2] - j["a"].q[2])
+                nrm = np.array([-ay, ax])
+                rows.append((float(nrm @ (pb - pa)), [
+                    (j["a"], np.array([-nrm[0], -nrm[1], -float(nrm @ da)])),
+                    (j["b"], np.array([nrm[0], nrm[1], float(nrm @ db)]))]))
+                rows.append((j["b"].q[2] - j["a"].q[2],
+                             [(j["a"], np.array([0.0, 0.0, -1.0])), (j["b"], np.array([0.0, 0.0, 1.0]))]))
             elif kind == "motor":
-                out.append(j["body"].q[2] - (j["theta0"] + j["omega"] * t))
-        return np.asarray(out, dtype=float)
+                rows.append((j["body"].q[2] - (j["theta0"] + j["omega"] * t),
+                             [(j["body"], np.array([0.0, 0.0, 1.0]))]))
+        m = len(rows)
+        phi = np.zeros(m)
+        J = np.zeros((m, n))
+        for i, (v, terms) in enumerate(rows):
+            phi[i] = v
+            for b, coef in terms:
+                c0 = col.get(id(b))
+                if c0 is not None:
+                    J[i, c0:c0 + 3] = coef
+        return phi, J
 
-    def jacobian(self, q, t=0.0, eps=1e-7):
-        phi0 = self.constraints(q, t)
-        n = len(q)
-        J = np.zeros((len(phi0), n))
-        for i in range(n):
-            dq = np.zeros(n)
-            dq[i] = eps
-            J[:, i] = (self.constraints(q + dq, t) - self.constraints(q - dq, t)) / (2 * eps)
+    def constraints(self, q, t=0.0):
+        phi, _ = self._build(q, t)
+        return phi
+
+    def jacobian(self, q, t=0.0):
+        _, J = self._build(q, t)
         return J
 
     def residual(self, q, t=0.0):
@@ -113,21 +139,36 @@ class Mechanism:
         phi_dot = (self.constraints(q, t + h) - self.constraints(q, t - h)) / (2 * h)
         return np.linalg.solve(J, -phi_dot)
 
-    def solve_position_robust(self, q0, t, tol=1e-10, max_iter=200):
-        q, ok = self.solve_position(q0, t, tol=tol)
-        if ok:
-            return q, True
+    def solve_position_robust(self, q0, t, tol=1e-10, max_iter=40):
         q = q0.copy()
-        lam = 1e-3
-        for _ in range(max_iter):
-            phi = self.constraints(q, t)
+        n = len(q)
+        for mu in (1.0, 0.1, 1e-2, 1e-3, 1e-4):
+            lam = 1e-3
+            phi, J = self._build(q, t)
             if np.max(np.abs(phi)) < tol:
                 return q, True
-            J = self.jacobian(q, t)
-            A = J @ J.T + lam * np.eye(len(phi))
-            dq = -J.T @ np.linalg.solve(A, phi)
-            q = q + dq
-            lam *= 0.7
+            cost = float(phi @ phi) + mu * float((q - q0) @ (q - q0))
+            for _ in range(max_iter):
+                A = J.T @ J + (lam + mu) * np.eye(n)
+                g = J.T @ phi + mu * (q - q0)
+                try:
+                    dq = -np.linalg.solve(A, g)
+                except np.linalg.LinAlgError:
+                    lam *= 10
+                    continue
+                qn = q + dq
+                phin, Jn = self._build(qn, t)
+                costn = float(phin @ phin) + mu * float((qn - q0) @ (qn - q0))
+                if costn < cost:
+                    q, phi, J, cost = qn, phin, Jn, costn
+                    lam = max(lam * 0.3, 1e-12)
+                    if np.max(np.abs(phi)) < tol:
+                        return q, True
+                else:
+                    lam *= 10
+        q2, ok2 = self.solve_position(q, t, tol=tol)
+        if ok2:
+            return q2, True
         return q, self.residual(q, t) < 1e-8
 
 
@@ -165,7 +206,7 @@ def build_four_bar(crank=0.08, coupler=0.22, rocker=0.18, ground=0.30):
     cr = m.add_body(Body("crank", {"A": (0.0, 0.0), "B": (crank, 0.0)}))
     cb = m.add_body(Body("coupler", {"B": (0.0, 0.0), "C": (C0[0] - B0[0], C0[1] - B0[1])},
                          x=B0[0], y=B0[1]))
-    cd = C0 - D
+    cd = D - C0
     rk = m.add_body(Body("rocker", {"C": (0.0, 0.0), "D": (cd[0], cd[1])},
                          x=C0[0], y=C0[1]))
     m.revolute(g, "A", cr, "A")
@@ -263,7 +304,8 @@ def run_mechanism(data, steps=240):
         for q in qs:
             m.unpack(q)
             series.append(b.q.tolist())
-        out_bodies.append({"id": bid, "name": b.name, "grounded": b.grounded, "qs": series})
+        out_bodies.append({"id": bid, "name": b.name, "grounded": b.grounded, "qs": series,
+                           "points": {k: v.tolist() for k, v in b.points.items()}})
     return {
         "ok": bool(ok),
         "error": None if ok else "Assemblage impossible depuis cette position initiale.",

@@ -120,3 +120,26 @@ def test_run_mechanism_sans_moteur():
     res = kin.run_mechanism(data)
     assert res["ok"] is False
     assert "moteur" in res["error"].lower()
+
+
+def test_run_mechanism_assembles_near_drawn_pose():
+    m = kin.build_four_bar()
+    data = _dict_from_mech(m)
+    data["bodies"][3]["x"] += 0.01
+    data["bodies"][3]["y"] += 0.005
+    res = kin.run_mechanism(data, steps=60)
+    assert res["ok"] is True
+    assert res["max_residual"] < 1e-8
+    rocker = res["bodies"][3]["qs"][0]
+    assert abs(rocker[0] - data["bodies"][3]["x"]) < 0.02
+    assert abs(rocker[1] - data["bodies"][3]["y"]) < 0.02
+
+
+def test_run_mechanism_impossible_geometry():
+    m = kin.build_four_bar()
+    data = _dict_from_mech(m)
+    for b in data["bodies"]:
+        if b["name"] == "coupler":
+            b["points"]["C"] = [0.02, 0.0]
+    res = kin.run_mechanism(data, steps=10)
+    assert res["ok"] is False
