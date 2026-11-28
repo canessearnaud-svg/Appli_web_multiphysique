@@ -97,8 +97,8 @@ def _dict_from_mech(m, motor_body="crank"):
                        "x": float(b.q[0]), "y": float(b.q[1]), "theta": float(b.q[2]),
                        "points": {k: v.tolist() for k, v in b.points.items()}})
     joints = [{"type": j["type"], "a": ids[j["a"].name], "la": j["la"],
-               "b": ids[j["b"].name], "lb": j["lb"], "axisDeg": 0}
-              for j in m.joints if j["type"] != "motor"]
+               "b": ids[j["b"].name], "lb": j["lb"], "axisDeg": 0, "node": f"j{i}"}
+              for i, j in enumerate(m.joints) if j["type"] != "motor"]
     return {"bodies": bodies, "joints": joints,
             "motor": {"body": ids[motor_body], "omega": 2 * np.pi, "theta0": 0.0}}
 
@@ -152,6 +152,59 @@ def _four_bar_dict(a, b, c, d):
     }
 
 
+def test_linear_motor_drives_slider():
+    data = {
+        "bodies": [
+            {"id": "g", "grounded": True, "x": 0, "y": 0, "theta": 0, "points": {"S": [0, 0]}},
+            {"id": "s", "x": 0.1, "y": 0, "theta": 0, "points": {"C": [0, 0]}, "mass": 2.0, "inertia": 0.0},
+        ],
+        "joints": [{"type": "motor_linear", "a": "g", "la": "S", "b": "s", "lb": "C",
+                    "axisDeg": 0, "s0": 0.1, "v": 0.5, "node": "j1"}],
+    }
+    s = kin.analyze_structure(data)
+    assert s["mobilite"] == 1 and s["n_drivers"] == 1 and not s["anomalies"]
+    res = kin.run_mechanism(data, steps=100)
+    assert res["ok"] is True
+    slider_x = [q[0] for q in res["bodies"][1]["qs"]]
+    assert abs(slider_x[-1] - 2.1) < 1e-6
+    assert len(res["motor_power"]) == len(res["t"])
+    assert len(res["joint_series"]["j1"]) == len(res["t"])
+
+
+def test_statics_lever():
+    data = {
+        "bodies": [
+            {"id": "g", "grounded": True, "x": 0, "y": 0, "theta": 0, "points": {"O": [0, 0]}},
+            {"id": "bar", "x": 0, "y": 0, "theta": 0, "points": {"O": [0, 0], "A": [0.3, 0]}, "mass": 0.0, "inertia": 0.0},
+        ],
+        "joints": [{"type": "revolute", "a": "g", "la": "O", "b": "bar", "lb": "O", "node": "j1"}],
+        "motor": {"body": "bar", "omega": 2 * np.pi, "theta0": 0.0},
+        "external_force": {"body": "bar", "point": "A", "force": [0.0, -100.0]},
+    }
+    res = kin.run_mechanism(data, mode="statics")
+    assert res["ok"] is True
+    j1 = [r for r in res["reactions"] if r["kind"] == "revolute"][0]
+    mot = [r for r in res["reactions"] if r["kind"] == "motor"][0]
+    assert abs(abs(j1["fy"]) - 100.0) < 1e-6
+    assert abs(abs(mot["torque"]) - 30.0) < 1e-6
+
+
+def test_dynamics_four_bar_outputs():
+    m = kin.build_four_bar()
+    data = _dict_from_mech(m)
+    for b in data["bodies"]:
+        b["mass"] = 1.5
+        b["inertia"] = 0.02
+    res = kin.run_mechanism(data, steps=120)
+    assert res["ok"] is True
+    assert res["mode"] == "dynamics"
+    assert len(res["motor_torque"]) == len(res["t"])
+    assert len(res["motor_power"]) == len(res["t"])
+    assert all(np.isfinite(res["motor_power"]))
+    assert all(len(ob.get("qdds", [])) == len(res["t"]) for ob in res["bodies"] if not ob["grounded"])
+    assert len(res["joint_series"]) >= 4
+
+
 def test_grashof_change_point_detected():
     s = kin.analyze_structure(_four_bar_dict(0.4, 0.4, 0.4, 0.4))
     assert any("POINT DE CHANGEMENT" in w for w in s["grashof"])
@@ -187,3 +240,83 @@ def test_run_mechanism_impossible_geometry():
     assert res["ok"] is False
     assert "bloqué vers t" in res["error"]
     assert "Grashof" in res["error"]
+
+
+def _slider_crank_dict(crank=0.05, rod=0.15):
+    return {
+        "bodies": [
+            {"id": "g", "grounded": True, "x": 0, "y": 0, "theta": 0, "points": {"O": [0, 0], "S": [0, 0]}},
+            {"id": "c", "x": 0, "y": 0, "theta": 0, "points": {"O": [0, 0], "B": [crank, 0]}, "mass": 1.0, "inertia": 0.01},
+            {"id": "r", "x": crank, "y": 0, "theta": 0, "points": {"B": [0, 0], "C": [rod, 0]}, "mass": 1.0, "inertia": 0.01},
+            {"id": "s", "x": crank + rod, "y": 0, "theta": 0, "points": {"C": [0, 0]}, "mass": 0.5, "inertia": 0.0},
+        ],
+        "joints": [
+            {"type": "revolute", "a": "g", "la": "O", "b": "c", "lb": "O", "node": "j1"},
+            {"type": "revolute", "a": "c", "la": "B", "b": "r", "lb": "B", "node": "j2"},
+            {"type": "revolute", "a": "r", "la": "C", "b": "s", "lb": "C", "node": "j3"},
+            {"type": "prismatic", "a": "g", "la": "S", "b": "s", "lb": "C", "axisDeg": 0, "node": "j4"},
+        ],
+        "motor": {"body": "c", "omega": 2 * np.pi, "theta0": 0.0},
+    }
+
+
+def test_slider_crank_run_ok():
+    data = _slider_crank_dict()
+    s = kin.analyze_structure(data)
+    assert s["mobilite"] == 1 and s["n_drivers"] == 1 and not s["anomalies"]
+    assert s["grashof"] == []
+    res = kin.run_mechanism(data, steps=180)
+    assert res["ok"] is True, res.get("error")
+    assert res["max_residual"] < 1e-8
+    slider = [b for b in res["bodies"] if b["id"] == "s"][0]
+    xs = [q[0] for q in slider["qs"]]
+    assert max(xs) - min(xs) > 0.05
+    assert all(abs(q[1]) < 1e-8 for q in slider["qs"])
+
+
+def test_slider_crank_blocked_gives_manivelle_hint():
+    res = kin.run_mechanism(_slider_crank_dict(crank=0.30, rod=0.15), steps=30)
+    assert res["ok"] is False
+    assert "bloqué vers t" in res["error"]
+    assert "manivelle" in res["error"]
+
+
+def test_statics_external_loads_list():
+    data = {
+        "bodies": [
+            {"id": "g", "grounded": True, "x": 0, "y": 0, "theta": 0, "points": {"O": [0, 0]}},
+            {"id": "bar", "x": 0, "y": 0, "theta": 0, "points": {"O": [0, 0], "A": [0.3, 0]}, "mass": 0.0, "inertia": 0.0},
+        ],
+        "joints": [{"type": "revolute", "a": "g", "la": "O", "b": "bar", "lb": "O", "node": "j1"}],
+        "motor": {"body": "bar", "omega": 2 * np.pi, "theta0": 0.0},
+        "external_loads": [
+            {"body": "bar", "point": "A", "force": [0.0, -100.0], "torque": 0.0},
+            {"body": "bar", "point": "O", "force": [10.0, 0.0], "torque": 0.0},
+        ],
+    }
+    res = kin.run_mechanism(data, mode="statics")
+    assert res["ok"] is True
+    assert len(res["loads"]) == 2
+    j1 = [r for r in res["reactions"] if r["kind"] == "revolute"][0]
+    mot = [r for r in res["reactions"] if r["kind"] == "motor"][0]
+    assert abs(abs(j1["fx"]) - 10.0) < 1e-6
+    assert abs(abs(j1["fy"]) - 100.0) < 1e-6
+    assert abs(abs(mot["torque"]) - 30.0) < 1e-6
+
+
+def test_statics_loads_also_in_dynamics():
+    data = _slider_crank_dict()
+    data["external_loads"] = [{"body": "s", "point": "C", "force": [0.0, -50.0], "torque": 0.0}]
+    res = kin.run_mechanism(data, steps=60)
+    assert res["ok"] is True, res.get("error")
+    assert all(np.isfinite(res["motor_torque"]))
+
+
+def test_analyze_warns_without_ground():
+    data = {
+        "bodies": [{"id": "a"}, {"id": "b"}],
+        "joints": [{"type": "revolute", "a": "a", "b": "b"}],
+        "motor": {"body": "a", "omega": 1.0, "theta0": 0.0},
+    }
+    s = kin.analyze_structure(data)
+    assert any("bâti" in a.lower() for a in s["anomalies"])

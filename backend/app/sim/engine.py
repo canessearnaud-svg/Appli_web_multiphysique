@@ -23,7 +23,11 @@ def run_job(run_id: int):
         if run.type == "kinematics_four_bar":
             run.result = kinematics.run_four_bar(**params)
         elif run.type == "kinematics":
-            run.result = kinematics.run_mechanism(params.get("diagram", {}), steps=int(params.get("steps", 240)))
+            run.result = kinematics.run_mechanism(
+                params.get("diagram", {}),
+                steps=int(params.get("steps", 240)),
+                mode=params.get("mode", "dynamics"),
+            )
         else:
             raise ValueError(f"type de run inconnu: {run.type}")
         run.status = "done"

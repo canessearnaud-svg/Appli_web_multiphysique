@@ -1,41 +1,49 @@
 import { writeFileSync } from "fs";
 import {
   Diagram,
-  assignJointToSolid,
+  createLinkedJoint,
+  createSolidAt,
   emptyDiagram,
-  ensureGround,
-  linkNewSolid,
+  plantGround,
   solidFrame,
   toBackendDiagram,
-  uid,
 } from "../src/kinematics/model";
 
-const d: Diagram = emptyDiagram();
-const g = ensureGround(d);
-d.solids = g.solids;
-d.groundId = g.groundId;
+let d: Diagram = emptyDiagram();
+d = plantGround(d, [0, 0]);
 
-const mk = (x: number, y: number) => {
-  const id = uid();
-  d.joints.push({ id, type: "revolute", x, y, axisDeg: 0, sideA: null, sideB: null });
-  return id;
+const link = (type: "revolute" | "prismatic", p1: [number, number], p2: [number, number]) => {
+  const pick = (p: [number, number]): string => {
+    for (const s of d.solids) {
+      if (s.grounded) {
+        const f = solidFrame(s, d);
+        if (Math.abs(p[0] - f.x) <= 0.12 && Math.abs(p[1] - f.y) <= 0.12) return s.id;
+      } else if (s.origin && Math.hypot(p[0] - s.origin[0], p[1] - s.origin[1]) < 0.04) return s.id;
+    }
+    const r = createSolidAt(d, p);
+    d = r.diagram;
+    return r.solidId;
+  };
+  const a = pick(p1);
+  const b = pick(p2);
+  const axisDeg = type === "prismatic" ? (Math.atan2(p2[1] - p1[1], p2[0] - p1[0]) * 180) / Math.PI : 0;
+  const res = createLinkedJoint(d, type, p1[0], p1[1], axisDeg, a, b);
+  if (res.error) throw new Error(res.error);
+  d = res.diagram;
+  return res.jointId;
 };
 
-const A = mk(0, 0);
-const D = mk(0.3, 0);
-const B = mk(0.08, 0);
-const C = mk(0.2264, 0.1642);
+const jO = link("revolute", [0, 0], [0.15, 0]);
+const jB = link("revolute", [0.15, 0], [0.4, 0]);
+const jC = link("revolute", [0.4, 0], [0.45, 0]);
+const jS = link("prismatic", [0.45, 0], [0, 0]);
 
-let out = assignJointToSolid(d, A, d.groundId!);
-out = assignJointToSolid(out, D, out.groundId!);
-out = linkNewSolid(out, A, B).diagram;
-out = linkNewSolid(out, B, C).diagram;
-out = linkNewSolid(out, C, D).diagram;
+const crank = d.solids.find((s) => s.jointIds.includes(jO) && s.jointIds.includes(jB))!;
+const slider = d.solids.find((s) => s.jointIds.includes(jS) && s.jointIds.includes(jC))!;
+d.motor = { solid: crank.id, omega: 2 * Math.PI, theta0: solidFrame(crank, d).theta };
+d.solids = d.solids.map((s) => (s.id === slider.id ? { ...s, mass: 0.5, load: { point: jS, fx: 0, fy: -50, M: 0 } } : s));
 
-const crank = out.solids.find((s) => s.jointIds.includes(A) && s.jointIds.includes(B))!;
-out.motor = { solid: crank.id, omega: 2 * Math.PI, theta0: solidFrame(crank, out).theta };
-
-const bd = toBackendDiagram(out);
-writeFileSync("/tmp/fourbar-backend.json", JSON.stringify(bd));
-console.log("solides:", bd.bodies.length, "liaisons:", bd.joints.length, "moteur:", bd.motor?.body);
-console.log("OK conversion écrite dans /tmp/fourbar-backend.json");
+const bd = toBackendDiagram(d);
+writeFileSync("/tmp/slidercrank-backend.json", JSON.stringify(bd));
+console.log("solides:", bd.bodies.length, "liaisons:", bd.joints.length, "moteur:", bd.motor?.body, "charges:", bd.external_loads?.length);
+console.log("OK conversion écrite dans /tmp/slidercrank-backend.json");

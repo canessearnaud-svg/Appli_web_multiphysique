@@ -54,17 +54,23 @@ Dessiner un schéma cinématique (liaisons normalisées + solides), l'analyser
 - [x] **F16 — Courbe de l'angle du solide moteur** vs temps.
 - [ ] **F17 — Trajectoires (drapeaux)** : poser un drapeau sur un point → courbe de sa trajectoire.
 - [ ] **F18 — Sondes** : valeur d'une liaison (angle, course) en courbe.
-- [ ] **F19 — Dynamique** : masses/inerties des solides, forces aux liaisons, équilibrage.
+- [x] **F19 — Dynamique** : masses/inerties des solides, forces aux liaisons, équilibrage.
 - [x] **F20 — Assemblage robuste** : le solveur s'ancre sur le dessin (pas d'effondrement, pas de saut de branche).
 
 ### Études statique et dynamique (ajout demandeur, 2026-11-27)
-- [ ] **F26 — Moteur linéaire (vérin linéaire)** : drive une glissière en position/vitesse imposée `x(t) = x0 + v·t` (effort imposé en v2) ; course, vitesse, accélération tracées.
-- [ ] **F27 — Masses et inerties** par solide (saisie manuelle d'abord ; import automatique depuis le STEP SolidWorks via OCCT au module 06).
-- [ ] **F28 — Accélérations** des solides (q̈) : courbes + vecteurs sur le schéma animé.
-- [ ] **F29 — Efforts dans les liaisons** : forces de réaction aux pivots (2 composantes), effort axial en glissière, calculés par les multiplicateurs de Lagrange λ du système KKT `[M  −Jᵀ ; J  0]·[q̈ ; λ] = [Q_ext + h ; −ḊJ·q̇]` (Newton–Euler contraint).
-- [ ] **F30 — Couples et puissance** : couple moteur C(t), puissance P = C·ω (rotatif) ou P = F·v (linéaire), courbes + affichage en direct sur le schéma.
-- [ ] **F31 — Étude statique** : gravité + effort extérieur imposé sur un solide, avec q̇ = q̈ = 0 → torseur de réaction dans chaque liaison (résolution du même système KKT à l'équilibre).
-- [ ] **F32 — Bilan de puissance** : puissance motrice vs somme des puissances aux liaisons → rendement du mécanisme.
+- [x] **F26 — Moteur linéaire (vérin linéaire)** : drive une glissière en position/vitesse imposée `x(t) = x0 + v·t` (effort imposé en v2) ; course, vitesse, accélération tracées.
+- [x] **F27 — Masses et inerties** par solide (saisie manuelle d'abord ; import automatique depuis le STEP SolidWorks via OCCT au module 06).
+- [x] **F28 — Accélérations** des solides (q̈) : courbes + vecteurs sur le schéma animé.
+- [x] **F29 — Efforts dans les liaisons** : forces de réaction aux pivots (2 composantes), effort axial en glissière, calculés par les multiplicateurs de Lagrange λ du système KKT `[M  −Jᵀ ; J  0]·[q̈ ; λ] = [Q_ext + h ; −ḊJ·q̇]` (Newton–Euler contraint).
+- [x] **F30 — Couples et puissance** : couple moteur C(t), puissance P = C·ω (rotatif) ou P = F·v (linéaire), courbes + affichage en direct sur le schéma.
+- [x] **F31 — Étude statique** : gravité + effort extérieur imposé sur un solide, avec q̇ = q̈ = 0 → torseur de réaction dans chaque liaison (résolution du même système KKT à l'équilibre).
+- [x] **F32 — Bilan de puissance** : puissance motrice vs somme des puissances aux liaisons → rendement du mécanisme.
+
+### Modélisation et statique résoluble (ajout demandeur, 2026-11-28)
+- [x] **F33 — Pose de liaison en 2 clics** : chaque liaison se pose par deux points d'accroche (un clic par solide ; clic sur le carré hachuré = BÂTI ; clic sur vide = nouveau solide). Pour une glissière, l'axe est la direction entre les 2 clics. Le BÂTI est un carré hachuré cliquable planté par l'outil « BÂTI ».
+- [x] **F34 — Charges extérieures multiples** : chaque solide peut recevoir une charge (Fx, Fy en N et couple M en N·m) appliquée à l'une de ses liaisons ; prise en compte en statique ET en dynamique (`external_loads`).
+- [x] **F35 — Statique résoluble** : bouton « ⚖ Statique » → torseurs de réaction dans chaque liaison + couple/effort moteur nécessaire pour tenir l'équilibre (résolution à la pose assemblée, gravité + charges).
+- [x] **F36 — Diagnostic bielle-manivelle** : si le mécanisme comporte une glissière et bloque, le message indique « manivelle plus courte que la bielle » et l'orientation de l'axe de glissière (au lieu du seul hint Grashof, réservé aux boucles 4 pivots). Anomalie « aucun solide bâti » si le BÂTI n'est pas planté.
 
 ### Vues et fichiers
 - [x] **F21 — Zoom / panoramique** du canvas.
