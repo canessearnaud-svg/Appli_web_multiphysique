@@ -66,6 +66,12 @@ Dessiner un schéma cinématique (liaisons normalisées + solides), l'analyser
 - [x] **F31 — Étude statique** : gravité + effort extérieur imposé sur un solide, avec q̇ = q̈ = 0 → torseur de réaction dans chaque liaison (résolution du même système KKT à l'équilibre).
 - [x] **F32 — Bilan de puissance** : puissance motrice vs somme des puissances aux liaisons → rendement du mécanisme.
 
+### Modélisation et statique résoluble (ajout demandeur, 2026-11-28)
+- [x] **F33 — Pose de liaison en 2 clics** : chaque liaison se pose par deux points d'accroche (un clic par solide ; clic sur le carré hachuré = BÂTI ; clic sur vide = nouveau solide). Pour une glissière, l'axe est la direction entre les 2 clics. Le BÂTI est un carré hachuré cliquable planté par l'outil « BÂTI ».
+- [x] **F34 — Charges extérieures multiples** : chaque solide peut recevoir une charge (Fx, Fy en N et couple M en N·m) appliquée à l'une de ses liaisons ; prise en compte en statique ET en dynamique (`external_loads`).
+- [x] **F35 — Statique résoluble** : bouton « ⚖ Statique » → torseurs de réaction dans chaque liaison + couple/effort moteur nécessaire pour tenir l'équilibre (résolution à la pose assemblée, gravité + charges).
+- [x] **F36 — Diagnostic bielle-manivelle** : si le mécanisme comporte une glissière et bloque, le message indique « manivelle plus courte que la bielle » et l'orientation de l'axe de glissière (au lieu du seul hint Grashof, réservé aux boucles 4 pivots). Anomalie « aucun solide bâti » si le BÂTI n'est pas planté.
+
 ### Vues et fichiers
 - [x] **F21 — Zoom / panoramique** du canvas.
 - [x] **F22 — Sauvegarde par projet** (rechargée à l'ouverture).

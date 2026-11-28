@@ -9,28 +9,30 @@ import {
   Solid,
   Vec,
   assignJointToSolid,
+  createLinkedJoint,
+  createSolidAt,
   emptyDiagram,
   ensureGround,
   linkNewSolid,
+  plantGround,
   removeJoint,
   removeSolid,
   solidFrame,
   toBackendDiagram,
   toWorldPoint,
-  uid,
 } from "../kinematics/model";
 
 type Tool = "select" | "revolute" | "prismatic" | "fixed" | "lier" | "ajouter" | "bati" | "motor" | "motor_linear" | "delete";
 
 const TOOLS: { id: Tool; label: string }[] = [
   { id: "select", label: "Sélection / déplacer" },
-  { id: "revolute", label: "Pivot (clic = centre exact)" },
-  { id: "prismatic", label: "Glissière" },
-  { id: "fixed", label: "Encastrement" },
-  { id: "lier", label: "Relier 2 liaisons → nouveau solide" },
-  { id: "ajouter", label: "Ajouter une liaison au solide sélectionné" },
-  { id: "bati", label: "Attacher une liaison au BÂTI" },
-  { id: "motor", label: "Moteur rotatif (sur le solide d'une liaison)" },
+  { id: "bati", label: "BÂTI : clic canevas = planter le bâti ; clic liaison = l'y attacher" },
+  { id: "revolute", label: "Pivot — 2 clics (solide A, puis solide B)" },
+  { id: "prismatic", label: "Glissière — 2 clics (axe = direction des 2 clics)" },
+  { id: "fixed", label: "Encastrement — 2 clics" },
+  { id: "lier", label: "Relier 2 liaisons → nouveau solide (schémas anciens)" },
+  { id: "ajouter", label: "Attacher une liaison orpheline au solide sélectionné" },
+  { id: "motor", label: "Moteur rotatif (clic sur une liaison d'un solide mobile)" },
   { id: "motor_linear", label: "Moteur linéaire (clic sur une glissière)" },
   { id: "delete", label: "Supprimer" },
 ];
@@ -51,6 +53,7 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
   const [tool, setTool] = useState<Tool>("select");
   const [sel, setSel] = useState<{ kind: "joint" | "solid"; id: string } | null>(null);
   const [pendingLink, setPendingLink] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ x: number; y: number; type: JointType; sideA: string } | null>(null);
   const [view, setView] = useState({ s: 300, ox: 420, oy: 280 });
   const [msg, setMsg] = useState("");
   const [analysis, setAnalysis] = useState<any>(null);
@@ -146,6 +149,10 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
     let best: Solid | null = null;
     let bd = 0.04;
     for (const s of diagram.solids) {
+      if (!s.grounded && s.origin) {
+        const d = Math.hypot(w[0] - s.origin[0], w[1] - s.origin[1]);
+        if (d < 0.04) return s;
+      }
       const pts = s.jointIds.map((id) => jointWorld(diagram.joints.find((j) => j.id === id)!));
       for (let i = 0; i + 1 < pts.length; i++) {
         const d = distToSegment(w, pts[i], pts[i + 1]);
@@ -162,39 +169,94 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
         }
       }
     }
-    return best;
+    if (best) return best;
+    const g = diagram.groundId ? diagram.solids.find((s) => s.id === diagram.groundId) : null;
+    if (g) {
+      const f = solidFrame(g, diagram);
+      if (Math.abs(w[0] - f.x) <= 0.12 && Math.abs(w[1] - f.y) <= 0.12) return g;
+    }
+    return null;
   };
 
   const onDown = (e: React.MouseEvent<SVGSVGElement>) => {
     const w = toWorldXY(e);
     if (tool === "revolute" || tool === "prismatic" || tool === "fixed") {
+      if (pending) {
+        const nearJ = pickJoint(w);
+        if (nearJ && Math.hypot(nearJ.x - w[0], nearJ.y - w[1]) < 0.04) {
+          setMsg("Tu as cliqué sur une liaison existante — clique sur un solide ou sur le vide pour le 2e point d'accroche.");
+          return;
+        }
+        const s = pickSolid(w);
+        let d2 = diagram;
+        let sideB: string;
+        if (s) {
+          sideB = s.id;
+        } else {
+          const r = createSolidAt(diagram, w);
+          d2 = r.diagram;
+          sideB = r.solidId;
+        }
+        if (sideB === pending.sideA) {
+          setMsg("Les 2 clics sont sur le même solide — clique ailleurs (solide différent, carré BÂTI, ou vide = nouveau solide).");
+          return;
+        }
+        const axisDeg = tool === "prismatic" ? (Math.atan2(w[1] - pending.y, w[0] - pending.x) * 180) / Math.PI : 0;
+        const res = createLinkedJoint(d2, tool, pending.x, pending.y, axisDeg, pending.sideA, sideB);
+        if (res.error) {
+          setMsg(res.error);
+          return;
+        }
+        setDiagram(res.diagram);
+        setPending(null);
+        setSel({ kind: "joint", id: res.jointId });
+        const name = (id: string) => res.diagram.solids.find((x) => x.id === id)?.name ?? "?";
+        setMsg(
+          `Liaison « ${JOINT_LABEL[tool]} » posée entre ${name(pending.sideA)} et ${name(sideB)}.` +
+            (tool === "prismatic" ? ` Axe = ${axisDeg.toFixed(0)}° (direction des 2 clics).` : "")
+        );
+        return;
+      }
       const existing = pickJoint(w);
       if (existing && Math.hypot(existing.x - w[0], existing.y - w[1]) < 0.04) {
         setSel({ kind: "joint", id: existing.id });
         setMsg("Une liaison existe déjà à cet endroit : elle est sélectionnée (pas de doublon).");
         return;
       }
-      const id = uid();
-      const j: JointNode = { id, type: tool, x: w[0], y: w[1], axisDeg: 0, sideA: null, sideB: null };
-      setDiagram((d) => ({ ...d, joints: [...d.joints, j] }));
-      setSel({ kind: "joint", id });
+      const s = pickSolid(w);
+      let d2 = diagram;
+      let sideA: string;
+      if (s) {
+        sideA = s.id;
+      } else {
+        const r = createSolidAt(diagram, w);
+        d2 = r.diagram;
+        sideA = r.solidId;
+      }
+      setDiagram(d2);
+      setPending({ x: w[0], y: w[1], type: tool as JointType, sideA });
+      setMsg("1er point d'accroche posé — clique le 2e solide de la liaison (clic vide = nouveau solide, carré hachuré = BÂTI).");
       return;
     }
     const j = pickJoint(w);
-    if (tool === "bati" || tool === "lier" || tool === "ajouter" || tool === "motor" || tool === "motor_linear" || tool === "delete") {
+    if (tool === "bati") {
+      if (j) {
+        setDiagram((d) => {
+          const g = ensureGround(d);
+          return assignJointToSolid(g, j.id, g.groundId!);
+        });
+        setMsg("Liaison attachée au bâti.");
+      } else {
+        setDiagram((d) => plantGround(d, w));
+        setMsg("Bâti planté ici (carré hachuré). Pose ensuite tes liaisons en cliquant d'abord sur le bâti ou un solide.");
+      }
+      return;
+    }
+    if (tool === "lier" || tool === "ajouter" || tool === "motor" || tool === "motor_linear" || tool === "delete") {
       if (!j) {
         setMsg("Clique sur le symbole de la liaison (cercle, croix ou glisseur).");
         return;
       }
-    }
-    if (tool === "bati") {
-      if (!j) return;
-      setDiagram((d) => {
-        const g = ensureGround(d);
-        return assignJointToSolid(g, j.id, g.groundId!);
-      });
-      setMsg("Liaison attachée au bâti.");
-      return;
     }
     if (tool === "lier") {
       if (!j) return;
@@ -400,6 +462,7 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
               onClick={() => {
                 setTool(t.id);
                 setPendingLink(null);
+                setPending(null);
               }}
               style={{
                 padding: "6px 10px",
@@ -414,10 +477,14 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
             </button>
           ))}
           <div style={{ marginTop: 8, fontSize: 12, color: "#555" }}>
-            <div>Méthode : on pose d'abord les</div>
-            <div>liaisons (clic = centre exact),</div>
-            <div>puis on les relie en solides.</div>
-            <div>Un solide = un trait entre ses liaisons.</div>
+            <div>Méthode : 1) planter le BÂTI</div>
+            <div>(outil BÂTI, clic sur le canevas),</div>
+            <div>2) chaque liaison = 2 clics :</div>
+            <div>un par solide (clic sur vide =</div>
+            <div>nouveau solide ; carré hachuré = bâti),</div>
+            <div>3) moteur sur une liaison,</div>
+            <div>4) Analyser (m, h) puis Simuler.</div>
+            {pending && <div style={{ color: "#d62728" }}>… en attente du 2ᵉ point d'accroche</div>}
             {pendingLink && <div style={{ color: "#d62728" }}>… en attente de la 2ᵉ liaison</div>}
           </div>
         </div>
@@ -434,6 +501,20 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
         >
           <line x1={0} y1={sy(0)} x2={840} y2={sy(0)} stroke="#ddd" />
           <line x1={sx(0)} y1={0} x2={sx(0)} y2={520} stroke="#ddd" />
+          {diagram.groundId && (() => {
+            const g = diagram.solids.find((s) => s.id === diagram.groundId);
+            if (!g) return null;
+            const f = solidFrame(g, diagram);
+            return (
+              <g>
+                <rect x={sx(f.x - 0.12)} y={sy(f.y + 0.12)} width={0.24 * view.s} height={0.24 * view.s} fill="#ececec" stroke="#888" strokeDasharray="5 4" />
+                <text x={sx(f.x)} y={sy(f.y) - 0.17 * view.s} textAnchor="middle" fontSize={12} fill="#666" fontWeight="bold">BÂTI</text>
+              </g>
+            );
+          })()}
+          {pending && (
+            <circle cx={sx(pending.x)} cy={sy(pending.y)} r={10} fill="none" stroke="#d62728" strokeWidth={2} strokeDasharray="3 3" />
+          )}
           {diagram.solids.map((s, i) => {
             const pts = s.jointIds.map((id) => jointWorld(diagram.joints.find((j) => j.id === id)!));
             if (pts.length === 0) return null;
@@ -457,6 +538,9 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
                   {s.grounded ? " (bâti)" : ""}
                   {diagram.motor?.solid === s.id ? "  ω" : ""}
                 </text>
+                {!s.grounded && s.origin && (
+                  <circle cx={sx(s.origin[0])} cy={sy(s.origin[1])} r={selS ? 5 : 3.5} fill={color} />
+                )}
               </g>
             );
           })}
@@ -533,6 +617,27 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
               <div><strong>{selSolid.name}</strong> — propriétés dynamiques</div>
               <label>masse (kg) <input style={inputStyle} type="number" step={0.1} value={selSolid.mass ?? 1} onChange={(e) => setDiagram((d) => ({ ...d, solids: d.solids.map((s) => (s.id === selSolid.id ? { ...s, mass: parseFloat(e.target.value) || 0 } : s)) }))} /></label>
               <label>inertie (kg·m²) <input style={inputStyle} type="number" step={0.001} value={selSolid.inertia ?? 0} onChange={(e) => setDiagram((d) => ({ ...d, solids: d.solids.map((s) => (s.id === selSolid.id ? { ...s, inertia: parseFloat(e.target.value) || 0 } : s)) }))} /></label>
+              <div style={{ borderTop: "1px dashed #ccc", paddingTop: 4 }}>
+                <div><strong>Charge extérieure</strong> (prise en compte en statique et dynamique)</div>
+                {selSolid.jointIds.length > 0 ? (
+                  <>
+                    <label>appliquée à la liaison{" "}
+                      <select
+                        style={{ width: 70 }}
+                        value={selSolid.load?.point ?? selSolid.jointIds[0]}
+                        onChange={(e) => setDiagram((d) => ({ ...d, solids: d.solids.map((s) => (s.id === selSolid.id ? { ...s, load: { point: e.target.value, fx: s.load?.fx ?? 0, fy: s.load?.fy ?? 0, M: s.load?.M ?? 0 } } : s)) }))}
+                      >
+                        {selSolid.jointIds.map((jid) => <option key={jid} value={jid}>{jid.slice(0, 5)}</option>)}
+                      </select>
+                    </label>
+                    <label>Fx (N) <input style={inputStyle} type="number" step={1} value={selSolid.load?.fx ?? 0} onChange={(e) => setDiagram((d) => ({ ...d, solids: d.solids.map((s) => (s.id === selSolid.id ? { ...s, load: { point: s.load?.point ?? s.jointIds[0], fx: parseFloat(e.target.value) || 0, fy: s.load?.fy ?? 0, M: s.load?.M ?? 0 } } : s)) }))} /></label>
+                    <label>Fy (N) <input style={inputStyle} type="number" step={1} value={selSolid.load?.fy ?? 0} onChange={(e) => setDiagram((d) => ({ ...d, solids: d.solids.map((s) => (s.id === selSolid.id ? { ...s, load: { point: s.load?.point ?? s.jointIds[0], fx: s.load?.fx ?? 0, fy: parseFloat(e.target.value) || 0, M: s.load?.M ?? 0 } } : s)) }))} /></label>
+                    <label>M (N·m) <input style={inputStyle} type="number" step={0.1} value={selSolid.load?.M ?? 0} onChange={(e) => setDiagram((d) => ({ ...d, solids: d.solids.map((s) => (s.id === selSolid.id ? { ...s, load: { point: s.load?.point ?? s.jointIds[0], fx: s.load?.fx ?? 0, fy: s.load?.fy ?? 0, M: parseFloat(e.target.value) || 0 } } : s)) }))} /></label>
+                  </>
+                ) : (
+                  <div style={{ color: "#777" }}>Le solide doit avoir au moins une liaison.</div>
+                )}
+              </div>
               <button onClick={() => { setDiagram((d) => removeSolid(d, selSolid.id)); setSel(null); }} style={{ color: "#d62728" }}>
                 Supprimer « {selSolid.name} »
               </button>
@@ -614,6 +719,24 @@ export default function KinematicsEditor({ project, onBack }: { project: Project
       {run?.status === "done" && run.result?.ok && run.result.mode === "statics" && (
         <div style={{ marginTop: 16 }}>
           <h3>⚖ Étude statique : torseurs de réaction dans les liaisons</h3>
+          {run.result.loads?.length > 0 && (
+            <p style={{ color: "#555" }}>
+              Charges appliquées :{" "}
+              {run.result.loads.map((l: any, i: number) => (
+                <span key={i}>
+                  {l.body} en {l.point} : F = ({l.force[0]}, {l.force[1]}) N{l.torque ? `, M = ${l.torque} N·m` : ""}
+                  {i < run.result.loads.length - 1 ? " ; " : ""}
+                </span>
+              ))}
+            </p>
+          )}
+          {run.result.reactions
+            .filter((r: any) => r.kind === "motor" || r.kind === "motor_linear")
+            .map((r: any, i: number) => (
+              <p key={i} style={{ fontWeight: "bold", color: "#1f77b4" }}>
+                ⚙ {r.kind === "motor" ? `Couple moteur nécessaire : C = ${r.torque.toFixed(2)} N·m` : `Effort moteur nécessaire : F = ${r.F.toFixed(2)} N`}
+              </p>
+            ))}
           <ul>
             {run.result.reactions.map((r: any, i: number) => (
               <li key={i}>

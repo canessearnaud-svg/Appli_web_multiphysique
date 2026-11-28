@@ -274,6 +274,8 @@ def analyze_structure(data):
         1 for j in joints if j.get("type") == "motor_linear")
     if n_drivers == 0:
         anomalies.append("Aucun moteur : ajoute un moteur rotatif (outil manivelle) ou linéaire (sur une glissière).")
+    if n > 0 and not any(b.get("grounded") for b in bodies):
+        anomalies.append("Aucun solide bâti : plante le BÂTI (outil Bâti) et attache-y au moins une liaison.")
     for j in joints:
         c = JOINT_CONSTRAINTS.get(j.get("type"), 0)
         total_c += c
@@ -398,7 +400,24 @@ def mechanism_from_dict(data):
     return m, bodies
 
 
-def dynamics_step(mech, q, qdot, t, g=9.81, ext=None):
+def _load_Q(Q, free, loads):
+    for ld in loads or []:
+        b = ld.get("body")
+        if b not in free:
+            continue
+        i = free.index(b)
+        F = np.asarray(ld.get("force", [0.0, 0.0]), dtype=float)
+        if ld.get("point") in b.points:
+            p = point_world(b, ld["point"])
+        else:
+            p = b.q[:2].copy()
+        r = p - b.q[:2]
+        Q[3 * i] += F[0]
+        Q[3 * i + 1] += F[1]
+        Q[3 * i + 2] += r[0] * F[1] - r[1] * F[0] + float(ld.get("torque", 0.0))
+
+
+def dynamics_step(mech, q, qdot, t, g=9.81, loads=None):
     phi, J = mech._build(q, t)
     free = mech.free_bodies()
     n = len(q)
@@ -409,15 +428,7 @@ def dynamics_step(mech, q, qdot, t, g=9.81, ext=None):
         M[3 * i + 1, 3 * i + 1] = b.mass
         M[3 * i + 2, 3 * i + 2] = b.inertia
         Q[3 * i + 1] = -b.mass * g
-    if ext is not None:
-        b = ext["body"]
-        i = free.index(b)
-        F = np.asarray(ext["force"], dtype=float)
-        p = point_world(b, ext["point"])
-        r = p - b.q[:2]
-        Q[3 * i] += F[0]
-        Q[3 * i + 1] += F[1]
-        Q[3 * i + 2] += r[0] * F[1] - r[1] * F[0]
+    _load_Q(Q, free, loads)
     h = 1e-6
     Jp, _ = mech._build(q + h * qdot, t + h)
     Jm, _ = mech._build(q - h * qdot, t - h)
@@ -438,22 +449,14 @@ def dynamics_step(mech, q, qdot, t, g=9.81, ext=None):
     return sol[:n], sol[n:]
 
 
-def statics_reactions(mech, q, t, g=9.81, ext=None):
+def statics_reactions(mech, q, t, g=9.81, loads=None):
     phi, J = mech._build(q, t)
     free = mech.free_bodies()
     n = len(q)
     Q = np.zeros(n)
     for i, b in enumerate(free):
         Q[3 * i + 1] = -b.mass * g
-    if ext is not None:
-        b = ext["body"]
-        i = free.index(b)
-        F = np.asarray(ext["force"], dtype=float)
-        p = point_world(b, ext["point"])
-        r = p - b.q[:2]
-        Q[3 * i] += F[0]
-        Q[3 * i + 1] += F[1]
-        Q[3 * i + 2] += r[0] * F[1] - r[1] * F[0]
+    _load_Q(Q, free, loads)
     return -np.linalg.solve(J.T, Q)
 
 
@@ -490,6 +493,15 @@ def run_mechanism(data, steps=240, mode="dynamics", g=9.81):
         return {"ok": False, "error": "Ajoute un moteur (rotatif sur un solide, ou linéaire sur une glissière).",
                 "structure": structure}
     m, bodies = mechanism_from_dict(data)
+    loads_raw = list(data.get("external_loads") or [])
+    ext = data.get("external_force")
+    if ext:
+        loads_raw.append(ext)
+    loads = []
+    for ld in loads_raw:
+        if ld.get("body") in bodies:
+            loads.append({"body": bodies[ld["body"]], "point": ld.get("point", "J1"),
+                          "force": ld.get("force", [0.0, 0.0]), "torque": ld.get("torque", 0.0)})
     omega = float(motor.get("omega", 2 * np.pi)) if motor else 0.0
     if linear:
         v = float(linear[0].get("v", 0.0))
@@ -502,15 +514,12 @@ def run_mechanism(data, steps=240, mode="dynamics", g=9.81):
         if not ok0:
             return {"ok": False, "mode": "statics", "structure": structure,
                     "error": "Assemblage impossible à t = 0 pour l'étude statique (vérifie m = 1, h = 0)."}
-        ext = data.get("external_force")
-        extb = None
-        if ext and ext.get("body") in bodies:
-            extb = {"body": bodies[ext["body"]], "point": ext.get("point", "J1"),
-                    "force": ext.get("force", [0.0, 0.0])}
-        lam = statics_reactions(m, q, 0.0, g=g, ext=extb)
+        lam = statics_reactions(m, q, 0.0, g=g, loads=loads)
         return {"ok": True, "mode": "statics", "t": [0.0], "period": 1.0, "omega": omega,
                 "bodies": [], "max_residual": m.residual(q, 0.0), "structure": structure,
-                "reactions": extract_reactions(m, lam), "gravity": g}
+                "reactions": extract_reactions(m, lam), "gravity": g,
+                "loads": [{"body": ld["body"].name, "point": ld["point"],
+                           "force": list(ld["force"]), "torque": ld.get("torque", 0.0)} for ld in loads]}
     ts, qs, qdots, ok = simulate(m, q0, 0.0, period, int(steps))
     out_bodies = []
     for bid, b in bodies.items():
@@ -527,13 +536,20 @@ def run_mechanism(data, steps=240, mode="dynamics", g=9.81):
         if mb is not None:
             deg = float(np.degrees(mb.q[2] - motor.get("theta0", 0.0)))
     if not ok:
+        has_slide = any(j.get("type") in ("prismatic", "motor_linear") for j in data.get("joints", []))
+        if has_slide:
+            hint = ("Piste glissière (ex. bielle-manivelle) : la manivelle doit être PLUS COURTE que la bielle, "
+                    "et l'axe de la glissière doit être bien orienté "
+                    "(axe = direction entre les 2 points d'accroche de la glissière).")
+        else:
+            hint = ("Cause probable : la barre motrice ne peut pas faire un tour complet "
+                    "(condition de Grashof : plus petite barre + plus grande < somme des deux autres). "
+                    "Modifie une longueur, ou mets le moteur sur une autre barre.")
         return {
             "ok": False, "mode": "dynamics",
             "error": (f"Assemblage impossible (bloqué vers t = {float(ts[-1]) if len(ts) else 0.0:.3f} s, "
-                      f"angle moteur ≈ {deg:.0f}°). Cause probable : la barre motrice ne peut pas faire un tour "
-                      "complet (condition de Grashof : plus petite barre + plus grande < somme des deux autres). "
-                      "Modifie une longueur, ou mets le moteur sur une autre barre. "
-                      "Autre piste : « Analyser (m, h) » doit donner m = 1, h = 0."),
+                      f"angle moteur ≈ {deg:.0f}°). {hint} "
+                      "Autre piste : « Analyser (m, h) » doit donner m = nombre de moteurs, h = 0."),
             "structure": structure,
         }
     free = m.free_bodies()
@@ -546,7 +562,7 @@ def run_mechanism(data, steps=240, mode="dynamics", g=9.81):
     motor_power = []
     lin_v = next((j.get("v", 0.0) for j in m.joints if j["type"] == "motor_linear"), 0.0)
     for k in range(len(ts)):
-        qdd, lam = dynamics_step(m, qs[k], qdots[k], ts[k], g=g)
+        qdd, lam = dynamics_step(m, qs[k], qdots[k], ts[k], g=g, loads=loads)
         for i, b in enumerate(free):
             qdd_series[id(b)].append(qdd[3 * i:3 * i + 3].tolist())
         for r in extract_reactions(m, lam):
